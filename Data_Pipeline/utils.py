@@ -313,7 +313,8 @@ def hypothetical_atm_greeks(sigma: float, S: float, T: float, r: float,
 def compute_iv(market_price: float, S: float, K: float, T: float,
                r: float, option_type: str = "call",
                q: float = 0.0,
-               steps: Optional[int] = None) -> Optional[float]:
+               steps: Optional[int] = None,
+               bracket_residuals: Optional[tuple[float, float]] = None) -> Optional[float]:
     """
     Compute American-option implied volatility using CRR-tree inversion.
 
@@ -321,6 +322,8 @@ def compute_iv(market_price: float, S: float, K: float, T: float,
     or numerical failure).
 
     Bounds: sigma in [0.001, 5.0]  (0.1 % – 500 % annualised volatility)
+    bracket_residuals, when supplied, must be the already computed pricing
+    errors at those two bounds for these same option inputs.
     """
     numeric_inputs = (market_price, S, K, T, r, q)
     if not all(math.isfinite(float(value)) for value in numeric_inputs):
@@ -351,12 +354,16 @@ def compute_iv(market_price: float, S: float, K: float, T: float,
             steps=steps,
         ) - market_price
 
-    # Verify bracket
-    try:
-        lo_val = objective(IV_MIN_SIGMA)
-        hi_val = objective(IV_MAX_SIGMA)
-    except Exception:
-        return None
+    # The pipeline row worker already prices both endpoints to classify a
+    # missing root. Reuse those prices instead of building four extra trees.
+    if bracket_residuals is None:
+        try:
+            lo_val = objective(IV_MIN_SIGMA)
+            hi_val = objective(IV_MAX_SIGMA)
+        except Exception:
+            return None
+    else:
+        lo_val, hi_val = bracket_residuals
 
     if not math.isfinite(lo_val) or not math.isfinite(hi_val):
         return None

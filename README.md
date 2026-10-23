@@ -84,6 +84,15 @@ existing constituency snapshots. The FRED fallback needs `FRED_API_KEY`.
 Keep all credentials outside Git. The shell wrappers expect Linux utilities
 including `flock` and `date --iso-8601`.
 
+## Measured CPU change
+
+The IV row worker now passes its already computed volatility-bracket residuals to
+the IV solver, avoiding two repeated price evaluations per eligible contract.
+The [fixed-input benchmark](benchmarks/README.md) records the local before and
+after CPU and wall times and checks IV and both kinds of Greeks against the
+imported calculator. This synthetic result does not establish the runtime of a
+full OPRA history on the server.
+
 ## First work package: make the calculator faster
 
 ### 1. Establish a reproducible baseline

@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 import flatfile_iv
+import utils
 from migrate_repaired_iv_rows import add_atm_greeks
 from utils import american_option_price_crr, compute_iv
 
@@ -65,6 +66,40 @@ def test_crr_iv_round_trip_remains_accurate() -> None:
 
     assert actual_iv is not None
     assert abs(actual_iv - expected_iv) < 5e-5
+
+
+def test_reusing_iv_bracket_preserves_result_and_avoids_two_prices(monkeypatch) -> None:
+    inputs = {
+        "S": 100.0,
+        "K": 102.0,
+        "T": 60.0 / 365.25,
+        "r": 0.04,
+        "option_type": "put",
+        "q": 0.012,
+    }
+    market_price = american_option_price_crr(sigma=0.25, **inputs)
+    low_residual = american_option_price_crr(sigma=utils.IV_MIN_SIGMA, **inputs) - market_price
+    high_residual = american_option_price_crr(sigma=utils.IV_MAX_SIGMA, **inputs) - market_price
+    original_price = utils.american_option_price_crr
+    calls = 0
+
+    def counted_price(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_price(*args, **kwargs)
+
+    monkeypatch.setattr(utils, "american_option_price_crr", counted_price)
+    uncached = utils.compute_iv(market_price=market_price, **inputs)
+    uncached_calls = calls
+    calls = 0
+    cached = utils.compute_iv(
+        market_price=market_price,
+        bracket_residuals=(low_residual, high_residual),
+        **inputs,
+    )
+
+    assert cached == uncached
+    assert uncached_calls - calls == 2
 
 
 def test_intrinsic_value_option_has_no_identifiable_iv() -> None:

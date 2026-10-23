@@ -22,6 +22,8 @@ from config import DATA_DIR
 from interest_rate_getter import SERIES_ID as FRED_RISK_FREE_SERIES_ID
 from interest_rate_getter import fetch_fred_series, load_fred_api_key, load_local_risk_free_rates, risk_free_rate_csv_path
 from utils import (
+    IV_MAX_SIGMA,
+    IV_MIN_SIGMA,
     IV_PRICE_TOLERANCE,
     american_option_price_crr,
     compute_iv,
@@ -600,8 +602,8 @@ def compute_row_iv_task(task: IvTask) -> IvResult:
         ) - float(close)
 
     try:
-        lo_val = objective(0.001)
-        hi_val = objective(5.0)
+        lo_val = objective(IV_MIN_SIGMA)
+        hi_val = objective(IV_MAX_SIGMA)
     except Exception:
         return None, "solver_error"
 
@@ -618,6 +620,7 @@ def compute_row_iv_task(task: IvTask) -> IvResult:
         r=float(risk_free_rate),
         option_type=option_type,
         q=q,
+        bracket_residuals=(lo_val, hi_val),
     )
     if iv is None:
         return None, "solver_error"
