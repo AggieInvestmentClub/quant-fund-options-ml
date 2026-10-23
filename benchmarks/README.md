@@ -42,3 +42,35 @@ and full historical feature aggregation. The owner's hours-long runtime still
 needs the real input files, server hardware, and original date range for a
 faithful comparison. Measure those separately before estimating production
 savings or changing worker allocation.
+
+## Optional C++ CRR kernel on `perf/native-crr-pricing`
+
+The native extension compiles the CRR tree's backward loop while leaving the
+pricing definitions and the rest of the pipeline in Python. Build and select
+it as described in [the native README](../Data_Pipeline/native/README.md). Use
+`OPTIONS_CRR_BACKEND=python` for the same branch's Python comparison.
+
+On the same macOS ARM machine and fixed 160-row fixture, two runs per backend
+and worker count gave these means in seconds. Both backends matched the saved
+IV and Greek reference within `1e-8`.
+
+| Workers | Backend | Total wall | Total process CPU |
+| --- | --- | ---: | ---: |
+| 1 | Python | 10.701 | 10.518 |
+| 1 | C++ | 0.318 | 0.272 |
+| 4 | Python | 4.396 | 16.148 |
+| 4 | C++ | 1.894 | 6.410 |
+
+At one worker this is a **33.7x wall-time speedup** and **38.7x CPU-time
+reduction** for the synthetic row calculations. Four native workers are slower
+than one for this small fixture because each IV/Greek stage creates a fresh
+process pool. Repeating the fixture ten times (1,600 rows) gave native wall
+times of about 2.66 seconds with one worker and 2.26 seconds with four; the
+four-worker run consumed about 8.4 seconds of process CPU versus 2.6 seconds
+with one worker. These repeated synthetic rows are useful for testing process
+overhead, but they are not a full OPRA pipeline benchmark.
+
+An eight-contract file-based smoke run produced identical ATM contract,
+ATM feature, Default Strike contract, and Default Strike feature CSVs between
+the Python and native backends within `1e-8`. Server results may differ with
+real input sizes, I/O, CPU limits, and process startup costs.

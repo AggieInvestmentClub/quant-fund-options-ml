@@ -93,6 +93,12 @@ after CPU and wall times and checks IV and both kinds of Greeks against the
 imported calculator. This synthetic result does not establish the runtime of a
 full OPRA history on the server.
 
+An [optional C++ CRR kernel](Data_Pipeline/native/README.md) is available on
+the `perf/native-crr-pricing` branch. It runs the repeated American-option tree
+calculation on the same CPU while preserving the Python pipeline and fallback.
+The [benchmark comparison](benchmarks/README.md) records the synthetic speedup
+and the separate cost of process startup.
+
 ## First work package: make the calculator faster
 
 ### 1. Establish a reproducible baseline
@@ -111,10 +117,9 @@ full OPRA history on the server.
 
 ### 2. Optimize the measured hot path
 
-- Start with `flatfile_iv.compute_row_iv_task()` and `utils.compute_iv()`.
-  The current row function checks IV brackets before calling a solver that
-  checks them again. Measure the cost, then remove duplicated work only if
-  the same acceptance and failure behavior is retained.
+- The IV row worker now reuses its bracket checks inside `utils.compute_iv()`.
+  Evaluate any further solver changes against the saved failure reasons and
+  numerical reference before adopting them.
 - Profile the American-option CRR tree and finite-difference Greek calls.
   Preserve the pricing model, tree-depth rules, tolerances, and distinction
   between hypothetical ATM and actual-strike Greeks. A faster calculation

@@ -29,6 +29,7 @@ from flatfile_iv import (  # noqa: E402
     run_batched_tasks,
 )
 from flatfile_regular_greeks import compute_row_regular_greeks_task  # noqa: E402
+import utils  # noqa: E402
 
 FIXTURE = Path(__file__).parent / "fixtures" / "synthetic_160_reference.json"
 GREEK_KEYS = ("delta", "gamma", "theta", "vega")
@@ -65,22 +66,27 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workers", nargs="+", type=int, default=[1, 4])
     parser.add_argument("--repeats", type=int, default=2)
+    parser.add_argument("--copies", type=int, default=1, help="Repeat the fixed fixture to measure larger CPU workloads.")
     args = parser.parse_args()
-    if args.repeats < 1 or any(workers < 1 for workers in args.workers):
-        parser.error("workers and repeats must be positive")
+    if args.repeats < 1 or args.copies < 1 or any(workers < 1 for workers in args.workers):
+        parser.error("workers, repeats, and copies must be positive")
 
     fixture = json.loads(FIXTURE.read_text())
-    iv_tasks = [tuple(row) for row in fixture["iv_tasks"]]
+    iv_tasks = [tuple(row) for row in fixture["iv_tasks"]] * args.copies
+    expected_iv = fixture["iv_results"] * args.copies
+    expected_atm = fixture["atm_greeks"] * args.copies
+    expected_regular = fixture["regular_greeks"] * args.copies
     print(json.dumps({
         "type": "setup", "rows": len(iv_tasks), "workers": args.workers,
-        "repeats": args.repeats, "python": platform.python_version(),
+        "repeats": args.repeats, "copies": args.copies, "python": platform.python_version(),
         "platform": platform.platform(), "fixture": str(FIXTURE),
+        "backend": "native" if utils._native_price_single_crr is not None else "python",
     }), flush=True)
 
     for workers in args.workers:
         for repeat in range(1, args.repeats + 1):
             iv, iv_wall, iv_cpu = run_stage(iv_tasks, workers, "IV", compute_row_iv_task)
-            check_iv(iv, fixture["iv_results"])
+            check_iv(iv, expected_iv)
             atm_tasks = [
                 (result[0], spot, tenor, rate, q, side)
                 for (spot, strike, close, tenor, rate, q, side), result in zip(iv_tasks, iv, strict=True)
@@ -90,11 +96,11 @@ def main() -> None:
                 for (spot, strike, close, tenor, rate, q, side), result in zip(iv_tasks, iv, strict=True)
             ]
             atm, atm_wall, atm_cpu = run_stage(atm_tasks, workers, "ATM Greeks", compute_row_atm_greeks_task)
-            check_greeks(atm, fixture["atm_greeks"], "ATM Greek")
+            check_greeks(atm, expected_atm, "ATM Greek")
             regular, regular_wall, regular_cpu = run_stage(
                 regular_tasks, workers, "Regular Greeks", compute_row_regular_greeks_task
             )
-            check_greeks(regular, fixture["regular_greeks"], "Regular Greek")
+            check_greeks(regular, expected_regular, "Regular Greek")
             print(json.dumps({
                 "type": "run", "workers": workers, "repeat": repeat, "rows": len(iv_tasks),
                 "iv_wall_s": round(iv_wall, 3), "iv_cpu_s": round(iv_cpu, 3),

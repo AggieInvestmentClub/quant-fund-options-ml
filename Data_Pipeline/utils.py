@@ -6,9 +6,22 @@ equity options when computing implied volatilities and hypothetical ATM Greeks.
 """
 
 import math
+import os
 from typing import Optional
 
 import numpy as np
+
+_CRR_BACKEND = os.environ.get("OPTIONS_CRR_BACKEND", "auto").strip().lower()
+if _CRR_BACKEND not in {"auto", "python", "native"}:
+    raise ValueError("OPTIONS_CRR_BACKEND must be auto, python, or native")
+try:
+    from _crr_native import price_single_crr as _native_price_single_crr
+except ImportError as exc:
+    if _CRR_BACKEND == "native":
+        raise RuntimeError("Native CRR extension is unavailable; run Data_Pipeline/native/build.py") from exc
+    _native_price_single_crr = None
+if _CRR_BACKEND == "python":
+    _native_price_single_crr = None
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +211,13 @@ def _american_option_price_crr_single(
 
     n_steps, _, u, d, p, disc = params
     option_type = option_type.lower()
+
+    # Keep unusual ranges on the original NumPy path, where intermediate
+    # overflow and NaN propagation are handled by NumPy's array operations.
+    if (_native_price_single_crr is not None and n_steps <= 1002 and T <= 5.0
+            and sigma <= 6.0 and abs(r) <= 1.0 and abs(q) <= 1.0
+            and S <= 1e100 and K <= 1e100):
+        return _native_price_single_crr(S, K, u, d, p, disc, n_steps, int(option_type == "call"))
 
     terminal_idx = np.arange(n_steps + 1)
     stock_prices = S * (u ** (n_steps - terminal_idx)) * (d ** terminal_idx)
