@@ -1,5 +1,9 @@
 # Fixed-input calculator benchmark
 
+The [October 28 server measurements](server_2026-10-28.md) compare the original
+calculator, IV bracket reuse, the C++ CRR kernel, hard-disk versus RAM storage,
+and vectorized OPRA parsing on real flatfiles.
+
 `benchmark_pricing.py` runs the production IV, hypothetical ATM Greek, and
 actual-strike Greek row workers on 160 **synthetic** contracts. Its fixture
 contains fixed option prices and reference outputs from the imported calculator

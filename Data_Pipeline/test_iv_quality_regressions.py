@@ -16,6 +16,35 @@ sys.path.insert(0, str(UPDATER_ROOT / "Default_Strike_Pipeline"))
 import regular_features
 
 
+def test_vectorized_opra_parser_matches_row_parser() -> None:
+    tickers = pd.Series(
+        [
+            " O:AAPL261120C00150000 ",
+            "o:TSLA261120P00000001",
+            "O:GOOGLE681231C00150000",
+            "O:AAPL691231P00150000",
+            "O:AAPL260230C00150000",
+            "not-an-option",
+            None,
+        ],
+        index=[10, 20, 30, 40, 50, 60, 70],
+    )
+    expected = pd.DataFrame(
+        [
+            flatfile_iv.parse_opra_option_ticker(ticker)
+            or {"underlying": None, "expiration_date": None, "option_type": None, "strike": None}
+            for ticker in tickers
+        ],
+        index=tickers.index,
+    )
+    expected["expiration_date"] = pd.to_datetime(expected["expiration_date"], errors="coerce")
+    expected["strike"] = pd.to_numeric(expected["strike"], errors="coerce")
+
+    pd.testing.assert_frame_equal(
+        flatfile_iv.parse_opra_option_tickers(tickers), expected, check_dtype=False
+    )
+
+
 def test_low_sigma_crr_does_not_average_a_valid_tree_with_zero() -> None:
     spot = 559.3900146484375
     strike = 420.0

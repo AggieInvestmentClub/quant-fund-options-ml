@@ -318,6 +318,20 @@ def parse_opra_option_ticker(ticker: str) -> Optional[Dict[str, Optional[str]]]:
         "strike": strike,
     }
 
+
+def parse_opra_option_tickers(tickers: pd.Series) -> pd.DataFrame:
+    """Extract OPRA fields for a whole flatfile without parsing dates row by row."""
+    fields = tickers.astype("string").str.strip().str.upper().str.extract(OPRA_TICKER_RE)
+    return pd.DataFrame(
+        {
+            "underlying": fields[0],
+            "expiration_date": pd.to_datetime(fields[1], format="%y%m%d", errors="coerce"),
+            "option_type": fields[2].map({"C": "call", "P": "put"}),
+            "strike": pd.to_numeric(fields[3], errors="coerce").astype("float64") / 1000.0,
+        },
+        index=tickers.index,
+    )
+
 # AGENTS: Mission-critical universe guard; filters malformed or unsupported underlying symbols.
 def is_supported_underlying(symbol: str) -> bool:
     return bool(symbol and SUPPORTED_UNDERLYING_RE.fullmatch(symbol))
@@ -804,18 +818,7 @@ def process_file(
         write_output_csv_atomic(df, output_path)
         return output_path, pd.DataFrame(), close_cache_updates
 
-    parsed = df["ticker"].apply(parse_opra_option_ticker)
-    meta = pd.DataFrame(
-        [
-            item if isinstance(item, dict) else {
-                "underlying": None,
-                "expiration_date": None,
-                "option_type": None,
-                "strike": None,
-            }
-            for item in parsed
-        ]
-    )
+    meta = parse_opra_option_tickers(df["ticker"])
 
     enriched = pd.concat([df, meta], axis=1)
     enriched = enriched[enriched["option_type"].isin(["call", "put"])].copy()
