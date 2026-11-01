@@ -14,6 +14,7 @@ UPDATER_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(UPDATER_ROOT / "Default_Strike_Pipeline"))
 
 import regular_features
+import flatfile_regular_greeks
 
 
 def test_vectorized_opra_parser_matches_row_parser() -> None:
@@ -193,3 +194,61 @@ def test_empty_raw_gamma_subset_is_missing_not_zero() -> None:
     assert math.isnan(row["gamma_imbalance_sum_raw"])
     assert row["call_gamma_sum_raw"] == 0.25
     assert row["near_atm_gamma_sum_raw"] == 0.25
+
+
+def test_regular_greeks_source_iv_coverage_accepts_valid_sparse_cycle(tmp_path: Path) -> None:
+    iv_csv = tmp_path / "atm_iv.csv"
+    df = pd.DataFrame(
+        {
+            "trade_date": ["2026-04-21", "2026-04-21"],
+            "ticker": ["O:AAPL260522C00210000", "O:AAPL260717P00210000"],
+            "underlying": ["AAPL", "AAPL"],
+            "expiration_date": ["2026-05-22", "2026-07-17"],
+            "option_type": ["call", "put"],
+            "strike": [210.0, 210.0],
+            "close": [62.85, 5.0],
+            "underlying_close": [266.17, 266.17],
+            "dte_days": [31, 87],
+            "time_to_expiry_years": [31 / 365.25, 87 / 365.25],
+            "risk_free_rate": [0.0369, 0.0369],
+            "dividend_yield": [0.0039, 0.0039],
+            "implied_volatility": [0.90, 0.25],
+            "volume": [10, 10],
+            "transactions": [1, 1],
+        }
+    )
+    df.to_csv(iv_csv, index=False)
+    assert flatfile_regular_greeks.source_iv_output_covers_target(iv_csv) is True
+
+    for col in flatfile_regular_greeks.REGULAR_GREEK_COLS:
+        df[col] = 0.5
+    reg_csv = tmp_path / "regular_output.csv"
+    df.to_csv(reg_csv, index=False)
+    assert flatfile_regular_greeks.existing_regular_output_covers_target(reg_csv) is True
+
+
+def test_regular_greeks_source_iv_coverage_rejects_legacy_narrow_window(tmp_path: Path) -> None:
+    iv_csv = tmp_path / "legacy_atm_iv.csv"
+    df = pd.DataFrame(
+        {
+            "trade_date": ["2026-04-21", "2026-04-21"],
+            "ticker": ["O:AAPL260605C00210000", "O:AAPL260619P00210000"],
+            "underlying": ["AAPL", "AAPL"],
+            "expiration_date": ["2026-06-05", "2026-06-19"],
+            "option_type": ["call", "put"],
+            "strike": [210.0, 210.0],
+            "close": [62.85, 5.0],
+            "underlying_close": [266.17, 266.17],
+            "dte_days": [45, 59],
+            "time_to_expiry_years": [45 / 365.25, 59 / 365.25],
+            "risk_free_rate": [0.0369, 0.0369],
+            "dividend_yield": [0.0039, 0.0039],
+            "implied_volatility": [0.90, 0.25],
+            "volume": [10, 10],
+            "transactions": [1, 1],
+        }
+    )
+    df.to_csv(iv_csv, index=False)
+
+    assert flatfile_regular_greeks.source_iv_output_covers_target(iv_csv) is False
+    assert flatfile_regular_greeks.existing_regular_output_covers_target(iv_csv) is False

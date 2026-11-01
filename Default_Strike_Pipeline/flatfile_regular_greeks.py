@@ -49,6 +49,7 @@ GreekTask = Tuple[
 REGULAR_GREEK_COLS = ["delta", "gamma", "theta", "vega"]
 LEGACY_DTE_MIN_DAYS = 30
 LEGACY_DTE_MAX_DAYS = 90
+_STOCK_CACHE: flatfile_iv.StockHistoryCache = {}
 REGULAR_FEATURE_MAP = {
     "avg_call_iv": "implied_volatility_call",
     "avg_put_iv": "implied_volatility_put",
@@ -184,13 +185,11 @@ def existing_regular_output_covers_target(output_path: Path) -> bool:
         return False
     bounds = csv_dte_bounds(output_path)
     if bounds is None:
-        return False
+        return True
     min_dte, max_dte = bounds
-    if flatfile_iv.DTE_MIN_DAYS < LEGACY_DTE_MIN_DAYS:
-        lower_covered = min_dte < LEGACY_DTE_MIN_DAYS
-        upper_covered = flatfile_iv.DTE_MAX_DAYS <= LEGACY_DTE_MAX_DAYS or max_dte >= flatfile_iv.DTE_MAX_DAYS
-        return lower_covered and upper_covered
-    return min_dte <= flatfile_iv.DTE_MIN_DAYS and max_dte >= flatfile_iv.DTE_MAX_DAYS
+    min_target = flatfile_iv.DTE_MIN_DAYS + 7
+    max_target = flatfile_iv.DTE_MAX_DAYS - 7
+    return min_dte <= min_target and max_dte >= max_target
 
 
 def required_source_iv_cols() -> set[str]:
@@ -226,9 +225,11 @@ def source_iv_output_covers_target(source_iv_path: Path) -> bool:
         return False
     bounds = csv_dte_bounds(source_iv_path)
     if bounds is None:
-        return False
+        return True
     min_dte, max_dte = bounds
-    return min_dte <= flatfile_iv.DTE_MIN_DAYS and max_dte >= flatfile_iv.DTE_MAX_DAYS
+    min_target = flatfile_iv.DTE_MIN_DAYS + 7
+    max_target = flatfile_iv.DTE_MAX_DAYS - 7
+    return min_dte <= min_target and max_dte >= max_target
 
 
 def process_file_output_path(path: Path, input_root: Path, output_root: Path) -> Path:
@@ -284,7 +285,10 @@ def add_regular_greeks(df: pd.DataFrame, row_workers: int, trade_date: date) -> 
         trade_date,
         compute_row_regular_greeks_task,
     )
-    enriched[REGULAR_GREEK_COLS] = pd.DataFrame(greek_values, index=enriched.index)[REGULAR_GREEK_COLS]
+    enriched["delta"] = [res["delta"] for res in greek_values]
+    enriched["gamma"] = [res["gamma"] for res in greek_values]
+    enriched["theta"] = [res["theta"] for res in greek_values]
+    enriched["vega"] = [res["vega"] for res in greek_values]
     return enriched
 
 
@@ -369,6 +373,8 @@ def process_existing_iv_file(
         enriched = enriched[enriched["underlying"] == test_stock].copy()
 
     enriched = restrict_to_missing_dte_rows(enriched, existing)
+    if "dte_days" in enriched.columns:
+        enriched["time_to_expiry_years"] = pd.to_numeric(enriched["dte_days"], errors="coerce") / 365.25
     required_numeric = [
         "close",
         "strike",
@@ -408,7 +414,7 @@ def process_file(
     trade_date = flatfile_iv.trade_date_from_path(path)
     rel_path = path.relative_to(input_root)
     output_path = process_file_output_path(path, input_root, output_root)
-    stock_cache: flatfile_iv.StockHistoryCache = {}
+    stock_cache = _STOCK_CACHE
     local_close_cache = dict(close_cache)
     close_cache_updates: Dict[str, Optional[float]] = {}
 
@@ -449,19 +455,7 @@ def process_file(
         flatfile_iv.write_output_csv_atomic(combined, output_path)
         return output_path, combined[feature_columns()].copy() if not combined.empty else pd.DataFrame(), close_cache_updates
 
-    parsed = df["ticker"].apply(flatfile_iv.parse_opra_option_ticker)
-    meta = pd.DataFrame(
-        [
-            item if isinstance(item, dict) else {
-                "underlying": None,
-                "expiration_date": None,
-                "option_type": None,
-                "strike": None,
-            }
-            for item in parsed
-        ]
-    )
-
+    meta = flatfile_iv.parse_opra_option_tickers(df["ticker"])
     enriched = pd.concat([df, meta], axis=1)
     enriched = enriched[enriched["option_type"].isin(["call", "put"])].copy()
     if enriched.empty:
@@ -476,6 +470,8 @@ def process_file(
     enriched["dte_days"] = (enriched["expiration_date"] - enriched["trade_date"]).dt.days
     enriched["time_to_expiry_years"] = enriched["dte_days"] / 365.25
     enriched = restrict_to_missing_dte_rows(enriched, existing)
+    if "dte_days" in enriched.columns:
+        enriched["time_to_expiry_years"] = pd.to_numeric(enriched["dte_days"], errors="coerce") / 365.25
     enriched["underlying"] = enriched["underlying"].map(flatfile_iv.normalize_underlying_symbol)
     enriched = enriched[enriched["underlying"].map(flatfile_iv.is_supported_underlying)].copy()
     if allowed_underlyings is not None:
@@ -563,8 +559,8 @@ def build_daily_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=DAILY_FEATURE_COLUMNS)
     if "option_type" not in df.columns and "ticker" in df.columns:
-        parsed = df["ticker"].apply(flatfile_iv.parse_opra_option_ticker)
-        df["option_type"] = [item.get("option_type") if isinstance(item, dict) else None for item in parsed]
+        meta = flatfile_iv.parse_opra_option_tickers(df["ticker"])
+        df["option_type"] = meta["option_type"]
 
     required = {"trade_date", "underlying", "option_type", "implied_volatility", *REGULAR_GREEK_COLS}
     missing = [col for col in required if col not in df.columns]
@@ -830,8 +826,9 @@ def main() -> None:
                         reuse_existing=not (args.overwrite or args.overwrite_features),
                     )
                     feature_rows += daily_feature_rows
-                    flatfile_iv.save_close_cache(args.cache_output, close_cache)
                     completed += 1
+                    if completed % 25 == 0 or completed == len(files):
+                        flatfile_iv.save_close_cache(args.cache_output, close_cache)
                     print(
                         f"[{completed}/{len(files)}] wrote {output_path} rows={len(features)} "
                         f"features={daily_features_path} feature_rows={daily_feature_rows}"
@@ -848,13 +845,15 @@ def main() -> None:
             reuse_existing=not (args.overwrite or args.overwrite_features),
         )
         feature_rows += daily_feature_rows
-        flatfile_iv.save_close_cache(args.cache_output, close_cache)
         completed += 1
+        if completed % 25 == 0 or completed == len(files):
+            flatfile_iv.save_close_cache(args.cache_output, close_cache)
         print(
             f"[{completed}/{len(files)}] wrote {output_path} rows={len(features)} "
             f"features={daily_features_path} feature_rows={daily_feature_rows}"
         )
 
+    flatfile_iv.save_close_cache(args.cache_output, close_cache)
     export_final_feature_files(args.daily_features_root, temp_final_features_dir)
     if temp_final_features_dir.exists():
         if args.final_features_dir.exists():
