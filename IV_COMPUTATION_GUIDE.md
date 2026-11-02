@@ -26,7 +26,7 @@ iv = compute_iv(
 
 **Returns:**
 * `float`: Annualized implied volatility as a decimal (e.g., `0.25` = 25% IV).
-* `None`: If the solver cannot find a valid solution (see [Why `compute_iv` Returns None](#why-compute_iv-returns-none)).
+* `None`: The solver cannot find a valid solution.
 
 ---
 
@@ -97,13 +97,13 @@ print(df[["type", "strike", "price", "implied_volatility"]])
 
 ---
 
-## 3. Why `compute_iv` Returns None
+## 3. When `compute_iv` Returns None
 
 If `compute_iv()` returns `None`, the row failed one of the following checks:
 
 1. **Missing or Non-Finite Inputs**: Any input is `NaN`, `None`, or $\le 0$.
 2. **Arbitrage Violations**: The price is below intrinsic value or above the maximum allowable price ($S$ for calls, $K$ for puts).
-3. **No Time Value**: The market price is at or below immediate exercise value ($\text{market\_price} \le \text{intrinsic} + 10^{-6}$). For American options, options at intrinsic value have no identifiable volatility.
+3. **No Time Value**: The market price is at or below immediate exercise value ($\text{marketprice} \le \text{intrinsic} + 10^{-6}$). For American options, options at intrinsic value have no identifiable volatility.
 4. **Out of Range**: The required volatility is outside the solver's range of $[0.1\%, 500\%]$ ($\sigma \in [0.001, 5.0]$).
 
 ### Debugging with Error Reasons
