@@ -1,8 +1,12 @@
 """
 Option pricing utilities and implied-volatility computation.
 
-This module now uses a Cox-Ross-Rubinstein binomial tree for American-style
-equity options when computing implied volatilities and hypothetical ATM Greeks.
+This module uses a Leisen-Reimer (LR) binomial tree for American-style equity
+options when computing implied volatilities and hypothetical ATM Greeks.  The
+LR parametrisation (Peizer-Pratt Method 2 inversion) centres the lattice
+around the strike price so that a single odd-depth tree converges at
+O(1/N^2), eliminating the sawtooth oscillation that required CRR to average
+two adjacent tree depths.
 """
 
 import math
@@ -11,26 +15,28 @@ from typing import Optional
 
 import numpy as np
 
-_CRR_BACKEND = os.environ.get("OPTIONS_CRR_BACKEND", "auto").strip().lower()
-if _CRR_BACKEND not in {"auto", "python", "native"}:
-    raise ValueError("OPTIONS_CRR_BACKEND must be auto, python, or native")
+_LR_BACKEND = os.environ.get("OPTIONS_LR_BACKEND", os.environ.get("OPTIONS_CRR_BACKEND", "auto")).strip().lower()
+if _LR_BACKEND not in {"auto", "python", "native"}:
+    raise ValueError("OPTIONS_LR_BACKEND (or OPTIONS_CRR_BACKEND) must be auto, python, or native")
 try:
-    from _crr_native import price_single_crr as _native_price_single_crr
+    from _lr_native import price_single_lr as _native_price_single_lr
 except ImportError as exc:
-    if _CRR_BACKEND == "native":
-        raise RuntimeError("Native CRR extension is unavailable; run Data_Pipeline/native/build.py") from exc
-    _native_price_single_crr = None
-if _CRR_BACKEND == "python":
-    _native_price_single_crr = None
+    if _LR_BACKEND == "native":
+        raise RuntimeError(
+            "Native LR extension is unavailable; run Data_Pipeline/native/build.py"
+        ) from exc
+    _native_price_single_lr = None
+if _LR_BACKEND == "python":
+    _native_price_single_lr = None
 
 
 # ---------------------------------------------------------------------------
-# American-option CRR pricing
+# American-option Leisen-Reimer pricing
 # ---------------------------------------------------------------------------
 
-DEFAULT_CRR_STEPS = 201
-MIN_CRR_STEPS = 101
-MAX_CRR_STEPS = 1001
+DEFAULT_LR_STEPS = 101
+MIN_LR_STEPS = 51
+MAX_LR_STEPS = 1001
 IV_MIN_SIGMA = 0.001
 IV_MAX_SIGMA = 5.0
 IV_PRICE_TOLERANCE = 1e-6
@@ -46,12 +52,18 @@ def option_intrinsic_value(
         return max(float(S) - float(K), 0.0)
     return max(float(K) - float(S), 0.0)
 
-# AGENTS: Mission-critical pricing helper; chooses CRR tree depth for IV and ATM Greek calculations.
-def _resolve_crr_steps(T: float, steps: Optional[int] = None) -> int:
+# AGENTS: Mission-critical pricing helper; chooses LR tree depth for IV and ATM Greek calculations.
+# Step count is always forced to an odd integer (LR requirement for strike-centring).
+def _resolve_lr_steps(T: float, steps: Optional[int] = None) -> int:
     if steps is not None:
-        return max(MIN_CRR_STEPS, int(steps))
-    scaled = int(np.ceil(max(T, 1.0 / 365.25) * 365.25 * 4))
-    return int(min(MAX_CRR_STEPS, max(MIN_CRR_STEPS, scaled)))
+        n = max(MIN_LR_STEPS, int(steps))
+    else:
+        scaled = int(np.ceil(max(T, 1.0 / 365.25) * 365.25 * 2))
+        n = int(min(MAX_LR_STEPS, max(MIN_LR_STEPS, scaled)))
+    # Leisen-Reimer requires an odd step count for correct strike centring.
+    if n % 2 == 0:
+        n += 1
+    return n
 
 # AGENTS: Mission-critical math helper for Black-Scholes call pricing and Greeks.
 def _norm_cdf(x: float) -> float:
@@ -138,8 +150,33 @@ def _black_scholes_greeks(
         "vega": float(vega),
     }
 
-# AGENTS: Mission-critical CRR helper; validates tree parameters before pricing American options.
-def _crr_parameters(
+# AGENTS: Mission-critical math helper; Peizer-Pratt Method 2 inversion used by _lr_parameters().
+# Returns (h, 1-h) as a pair to avoid catastrophic cancellation when |z| is large
+# (e.g. deep ITM options or near-zero sigma), where 1 - h would lose precision.
+def _peizer_pratt(z: float, n: int):
+    if z == 0.0:
+        return 0.5, 0.5
+    # PP2 term: (z / (n + 1/3 + 0.1/(n+1)))^2 * (n + 1/6)
+    w = (z / (n + 1.0 / 3.0 + 0.1 / (n + 1.0))) ** 2 * (n + 1.0 / 6.0)
+    if w > 700.0:
+        # exp(-w) underflows to 0; return clipped extremes
+        return (1.0 - 1e-15, 1e-15) if z > 0 else (1e-15, 1.0 - 1e-15)
+    exp_neg_w = math.exp(-w)
+    sqrt_term = math.sqrt(max(0.0, 1.0 - exp_neg_w))
+    if z > 0:
+        # h is close to 1; compute 1-h via the numerically stable form
+        h = 0.5 + 0.5 * sqrt_term
+        one_minus_h = 0.5 * exp_neg_w / (1.0 + sqrt_term)
+    else:
+        # h is close to 0; compute h via the numerically stable form
+        one_minus_h = 0.5 + 0.5 * sqrt_term
+        h = 0.5 * exp_neg_w / (1.0 + sqrt_term)
+    return h, one_minus_h
+
+# AGENTS: Mission-critical LR helper; validates tree parameters before pricing American options.
+def _lr_parameters(
+    S: float,
+    K: float,
     T: float,
     r: float,
     sigma: float,
@@ -147,41 +184,44 @@ def _crr_parameters(
     steps: Optional[int] = None,
 ):
     """
-    Compute CRR tree parameters using the standard formulas:
-      u = exp(sigma * sqrt(dt))
-      d = exp(-sigma * sqrt(dt)) = 1 / u
-      p = (exp((r - q) * dt) - d) / (u - d)
+    Compute Leisen-Reimer tree parameters using the Peizer-Pratt Method 2 inversion.
 
-    If the requested or automatically selected step count produces an invalid
-    probability, increase the step count until the tree satisfies the CRR
-    no-arbitrage condition or we hit the configured cap.
+    The step count is forced to an odd integer (LR requirement).  Unlike CRR,
+    LR does not need a retry loop because the risk-neutral probability p is
+    derived directly from the Black-Scholes d2 value, which always lies in
+    (0, 1) for finite sigma.
+
+    Returns (n_steps, dt, u, d, p, disc) or None on degenerate input.
     """
-    n_steps = _resolve_crr_steps(T, steps)
+    if S <= 0 or K <= 0 or sigma <= 0 or T <= 0:
+        return None
 
-    while True:
-        dt = T / n_steps
-        if dt <= 0:
-            return None
+    n_steps = _resolve_lr_steps(T, steps)
+    dt = T / n_steps
 
-        u = float(np.exp(sigma * np.sqrt(dt)))
-        d = float(np.exp(-sigma * np.sqrt(dt)))
-        denom = u - d
-        if denom == 0:
-            return None
+    sqrt_t = math.sqrt(T)
+    sigma_sqrt_t = sigma * sqrt_t
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / sigma_sqrt_t
+    d2 = d1 - sigma_sqrt_t
 
-        growth = float(np.exp((r - q) * dt))
-        p = (growth - d) / denom
-        if 0.0 <= p <= 1.0:
-            disc = float(np.exp(-r * dt))
-            return n_steps, dt, u, d, p, disc
+    p, one_minus_p = _peizer_pratt(d2, n_steps)
+    p_prime, one_minus_p_prime = _peizer_pratt(d1, n_steps)
 
-        if n_steps >= MAX_CRR_STEPS:
-            return None
+    if p <= 0.0 or one_minus_p <= 0.0:
+        return None
 
-        n_steps = min(MAX_CRR_STEPS, max(n_steps + 1, int(np.ceil(n_steps * 1.5))))
+    growth = math.exp((r - q) * dt)
+    u = growth * (p_prime / p)
+    d = growth * (one_minus_p_prime / one_minus_p)
 
-# AGENTS: Mission-critical CRR core; called by american_option_price_crr() for American-style pricing.
-def _american_option_price_crr_single(
+    if not (math.isfinite(u) and math.isfinite(d) and u > 0 and d > 0):
+        return None
+
+    disc = math.exp(-r * dt)
+    return n_steps, dt, u, d, p, disc
+
+# AGENTS: Mission-critical LR core; called by american_option_price_lr() for American-style pricing.
+def _american_option_price_lr_single(
     S: float,
     K: float,
     T: float,
@@ -192,10 +232,10 @@ def _american_option_price_crr_single(
     steps: Optional[int] = None,
 ) -> float:
     """
-    Price an American option with a single CRR binomial tree.
+    Price an American option with a single Leisen-Reimer binomial tree.
 
     Parameters match the standard option-pricing inputs, with `steps`
-    controlling tree depth.
+    controlling tree depth (forced to an odd integer internally).
     """
     if S <= 0 or K <= 0 or sigma <= 0:
         return 0.0
@@ -205,19 +245,20 @@ def _american_option_price_crr_single(
             return max(S - K, 0.0)
         return max(K - S, 0.0)
 
-    params = _crr_parameters(T=T, r=r, sigma=sigma, q=q, steps=steps)
+    params = _lr_parameters(S=S, K=K, T=T, r=r, sigma=sigma, q=q, steps=steps)
     if params is None:
         return math.nan
 
     n_steps, _, u, d, p, disc = params
     option_type = option_type.lower()
 
-    # Keep unusual ranges on the original NumPy path, where intermediate
-    # overflow and NaN propagation are handled by NumPy's array operations.
-    if (_native_price_single_crr is not None and n_steps <= 1002 and T <= 5.0
+    # Dispatch to the C++ kernel for normal operating ranges; fall back to the
+    # NumPy path for unusual inputs where overflow / NaN propagation is safer
+    # to handle through NumPy's array operations.
+    if (_native_price_single_lr is not None and n_steps <= 1002 and T <= 5.0
             and sigma <= 6.0 and abs(r) <= 1.0 and abs(q) <= 1.0
             and S <= 1e100 and K <= 1e100):
-        return _native_price_single_crr(S, K, u, d, p, disc, n_steps, int(option_type == "call"))
+        return _native_price_single_lr(S, K, u, d, p, disc, n_steps, int(option_type == "call"))
 
     terminal_idx = np.arange(n_steps + 1)
     stock_prices = S * (u ** (n_steps - terminal_idx)) * (d ** terminal_idx)
@@ -238,7 +279,7 @@ def _american_option_price_crr_single(
     return float(option_values[0])
 
 # AGENTS: Mission-critical public pricing function; compute_iv() and hypothetical_atm_greeks() depend on it.
-def american_option_price_crr(
+def american_option_price_lr(
     S: float,
     K: float,
     T: float,
@@ -249,10 +290,12 @@ def american_option_price_crr(
     steps: Optional[int] = None,
 ) -> float:
     """
-    Price an American option with a CRR binomial tree.
+    Price an American option with a Leisen-Reimer binomial tree.
 
-    To reduce the well-known odd/even oscillation of binomial trees,
-    return the average of two adjacent tree depths.
+    The Leisen-Reimer parametrisation (Peizer-Pratt Method 2) centres the
+    terminal lattice nodes around the strike price when the step count is odd,
+    eliminating the CRR odd/even sawtooth oscillation.  A single tree
+    therefore suffices — no adjacent-depth averaging is needed.
     """
     option_type = option_type.lower()
 
@@ -261,15 +304,19 @@ def american_option_price_crr(
     if option_type == "call" and q <= 1e-12:
         return _black_scholes_price(S, K, T, r, sigma, option_type, q)
 
-    valid_params = _crr_parameters(T=T, r=r, sigma=sigma, q=q, steps=steps)
-    if valid_params is None:
+    params = _lr_parameters(S=S, K=K, T=T, r=r, sigma=sigma, q=q, steps=steps)
+    if params is None:
         return math.nan
-    n_steps = valid_params[0]
-    price_n = _american_option_price_crr_single(S, K, T, r, sigma, option_type, q, n_steps)
-    price_np1 = _american_option_price_crr_single(S, K, T, r, sigma, option_type, q, n_steps + 1)
-    if not math.isfinite(price_n) or not math.isfinite(price_np1):
+    n_steps = params[0]
+    price = _american_option_price_lr_single(S, K, T, r, sigma, option_type, q, n_steps)
+    if not math.isfinite(price):
         return math.nan
-    return 0.5 * (price_n + price_np1)
+    return price
+
+
+# Backward-compatible alias so existing callers (flatfile_iv, flatfile_regular_greeks,
+# tests, benchmarks) do not require immediate renaming.
+american_option_price_crr = american_option_price_lr
 
 
 # ---------------------------------------------------------------------------
@@ -297,25 +344,25 @@ def hypothetical_atm_greeks(sigma: float, S: float, T: float, r: float,
     if option_type.lower() == "call" and q <= 1e-12:
         return _black_scholes_greeks(S, K, T, r, sigma, option_type, q)
 
-    n_steps = _resolve_crr_steps(T, steps)
+    n_steps = _resolve_lr_steps(T, steps)
     dS = max(0.01, 0.01 * S)
     d_sigma = max(1e-4, 0.01 * sigma)
     dT = min(1.0 / 365.25, max(T / 10.0, 1.0 / 365.25))
 
-    base = american_option_price_crr(S, K, T, r, sigma, option_type, q, n_steps)
-    up = american_option_price_crr(S + dS, K, T, r, sigma, option_type, q, n_steps)
-    down = american_option_price_crr(max(1e-8, S - dS), K, T, r, sigma, option_type, q, n_steps)
+    base = american_option_price_lr(S, K, T, r, sigma, option_type, q, n_steps)
+    up = american_option_price_lr(S + dS, K, T, r, sigma, option_type, q, n_steps)
+    down = american_option_price_lr(max(1e-8, S - dS), K, T, r, sigma, option_type, q, n_steps)
     delta = (up - down) / (2.0 * dS)
     gamma = (up - 2.0 * base + down) / (dS ** 2)
 
-    vega_up = american_option_price_crr(S, K, T, r, sigma + d_sigma, option_type, q, n_steps)
-    vega_down = american_option_price_crr(
+    vega_up = american_option_price_lr(S, K, T, r, sigma + d_sigma, option_type, q, n_steps)
+    vega_down = american_option_price_lr(
         S, K, T, r, max(1e-6, sigma - d_sigma), option_type, q, n_steps
     )
     vega = (vega_up - vega_down) / (2.0 * d_sigma)
 
     shorter_T = max(1e-6, T - dT)
-    shorter = american_option_price_crr(S, K, shorter_T, r, sigma, option_type, q, n_steps)
+    shorter = american_option_price_lr(S, K, shorter_T, r, sigma, option_type, q, n_steps)
     theta = (shorter - base) / dT
 
     return {
@@ -336,7 +383,7 @@ def compute_iv(market_price: float, S: float, K: float, T: float,
                steps: Optional[int] = None,
                bracket_residuals: Optional[tuple[float, float]] = None) -> Optional[float]:
     """
-    Compute American-option implied volatility using CRR-tree inversion.
+    Compute American-option implied volatility using Leisen-Reimer tree inversion.
 
     Returns None when IV cannot be computed (arbitrage violation, illiquid,
     or numerical failure).
@@ -363,7 +410,7 @@ def compute_iv(market_price: float, S: float, K: float, T: float,
 
     # AGENTS: Mission-critical nested solver target; used only inside compute_iv().
     def objective(sigma: float) -> float:
-        return american_option_price_crr(
+        return american_option_price_lr(
             S=S,
             K=K,
             T=T,

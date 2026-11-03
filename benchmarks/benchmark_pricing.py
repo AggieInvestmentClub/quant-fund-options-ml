@@ -80,7 +80,7 @@ def main() -> None:
         "type": "setup", "rows": len(iv_tasks), "workers": args.workers,
         "repeats": args.repeats, "copies": args.copies, "python": platform.python_version(),
         "platform": platform.platform(), "fixture": str(FIXTURE),
-        "backend": "native" if utils._native_price_single_crr is not None else "python",
+        "backend": "native" if utils._native_price_single_lr is not None else "python",
     }), flush=True)
 
     for workers in args.workers:

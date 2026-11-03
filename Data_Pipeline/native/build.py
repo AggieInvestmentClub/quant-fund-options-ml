@@ -1,4 +1,4 @@
-"""Build the optional CRR C++ extension in place, without Python build packages.
+"""Build the optional Leisen-Reimer C++ extension in place, without Python build packages.
 
 Run from any directory with: python Data_Pipeline/native/build.py
 Requires a C++17 compiler and Python development headers on macOS or Linux.
@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 def main() -> None:
-    source = Path(__file__).with_name("crr_native.cpp")
+    source = Path(__file__).with_name("lr_native.cpp")
     target_dir = source.parent.parent
     extension_suffix = sysconfig.get_config_var("EXT_SUFFIX")
     include_dir = sysconfig.get_paths()["include"]
@@ -24,7 +24,7 @@ def main() -> None:
     if sys.platform not in {"darwin", "linux"}:
         raise RuntimeError("This build helper currently supports macOS and Linux")
 
-    target = target_dir / f"_crr_native{extension_suffix}"
+    target = target_dir / f"_lr_native{extension_suffix}"
     compiler = shlex.split(os.environ.get("CXX", "c++"))
     command = [
         *compiler, "-O3", "-std=c++17", "-fPIC", "-ffp-contract=off",

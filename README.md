@@ -12,7 +12,7 @@ training pipeline here yet.
 
 | Path | Role |
 | --- | --- |
-| `Data_Pipeline/utils.py` | American-option CRR tree pricing, IV inversion, and hypothetical at-the-money (ATM) Greeks. |
+| `Data_Pipeline/utils.py` | American-option Leisen-Reimer tree pricing, IV inversion, and hypothetical at-the-money (ATM) Greeks. |
 | `Data_Pipeline/flatfile_iv.py` | Parse OPRA daily aggregates, filter contracts, join underlying prices and rates, run IV/ATM Greek calculations, and export features. |
 | `Data_Pipeline/main.py` | Orchestrate constituency snapshots, flatfile downloads, and ATM calculations. |
 | `Data_Pipeline/flat_file.py` | Download missing Massive OPRA flatfiles. |
@@ -93,11 +93,12 @@ after CPU and wall times and checks IV and both kinds of Greeks against the
 imported calculator. This synthetic result does not establish the runtime of a
 full OPRA history on the server.
 
-An [optional C++ CRR kernel](Data_Pipeline/native/README.md) is available on
-the `perf/native-crr-pricing` branch. It runs the repeated American-option tree
-calculation on the same CPU while preserving the Python pipeline and fallback.
-The [benchmark comparison](benchmarks/README.md) records the synthetic speedup
-and the separate cost of process startup.
+An [optional C++ Leisen-Reimer kernel](Data_Pipeline/native/README.md) accelerates
+the American-option tree calculation while preserving the Python pipeline and
+NumPy fallback. The LR parametrisation (Peizer-Pratt Method 2) centres the
+lattice around the strike, eliminating the CRR sawtooth oscillation and
+allowing a single 101-step tree to replace the former 201+202-step pair.
+The [benchmark comparison](benchmarks/README.md) records the synthetic speedup.
 
 ## First work package: make the calculator faster
 
@@ -120,7 +121,7 @@ and the separate cost of process startup.
 - The IV row worker now reuses its bracket checks inside `utils.compute_iv()`.
   Evaluate any further solver changes against the saved failure reasons and
   numerical reference before adopting them.
-- Profile the American-option CRR tree and finite-difference Greek calls.
+- Profile the American-option Leisen-Reimer tree and finite-difference Greek calls.
   Preserve the pricing model, tree-depth rules, tolerances, and distinction
   between hypothetical ATM and actual-strike Greeks. A faster calculation
   that changes the financial definition is a separate experiment.

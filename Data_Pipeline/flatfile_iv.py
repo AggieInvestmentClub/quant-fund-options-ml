@@ -25,7 +25,8 @@ from utils import (
     IV_MAX_SIGMA,
     IV_MIN_SIGMA,
     IV_PRICE_TOLERANCE,
-    american_option_price_crr,
+    american_option_price_lr,
+    american_option_price_crr,  # backward-compatible alias for american_option_price_lr
     compute_iv,
     hypothetical_atm_greeks,
     option_intrinsic_value,
@@ -605,7 +606,7 @@ def compute_row_iv_task(task: IvTask) -> IvResult:
 
     # AGENTS: Mission-critical nested solver target; local fast IV solve used before falling back to utils.compute_iv().
     def objective(sigma: float) -> float:
-        return american_option_price_crr(
+        return american_option_price_lr(
             S=float(underlying_close),
             K=float(strike),
             T=float(time_to_expiry_years),

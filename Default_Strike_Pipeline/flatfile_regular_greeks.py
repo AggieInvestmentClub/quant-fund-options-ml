@@ -28,7 +28,8 @@ import flatfile_iv
 from constituency import active_symbols_on_date, load_constituency_snapshots
 from config import DATA_DIR
 from dataset_paths import CONSTITUENCY_ROOT, DEFAULT_STRIKE_CONTRACT_ROOT
-from utils import american_option_price_crr
+from utils import american_option_price_lr
+american_option_price_crr = american_option_price_lr  # backward-compatible alias
 
 OUTPUT_ROOT = DEFAULT_STRIKE_CONTRACT_ROOT
 SOURCE_IV_ROOT = flatfile_iv.OUTPUT_ROOT

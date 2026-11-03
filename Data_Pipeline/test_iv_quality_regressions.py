@@ -8,7 +8,7 @@ import pandas as pd
 import flatfile_iv
 import utils
 from migrate_repaired_iv_rows import add_atm_greeks
-from utils import american_option_price_crr, compute_iv
+from utils import american_option_price_lr, american_option_price_crr, compute_iv
 
 UPDATER_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(UPDATER_ROOT / "Default_Strike_Pipeline"))
@@ -46,7 +46,8 @@ def test_vectorized_opra_parser_matches_row_parser() -> None:
     )
 
 
-def test_low_sigma_crr_does_not_average_a_valid_tree_with_zero() -> None:
+def test_low_sigma_lr_does_not_produce_nonfinite_or_wrong_delta() -> None:
+    """LR must return finite prices and a delta near 1 for deep-ITM near-expiry calls."""
     spot = 559.3900146484375
     strike = 420.0
     tenor = 35.0 / 365.25
@@ -55,10 +56,10 @@ def test_low_sigma_crr_does_not_average_a_valid_tree_with_zero() -> None:
     sigma = 0.0010000003033616
     spot_step = 0.01 * spot
 
-    down = american_option_price_crr(
+    down = american_option_price_lr(
         spot - spot_step, strike, tenor, rate, sigma, "call", dividend_yield
     )
-    up = american_option_price_crr(
+    up = american_option_price_lr(
         spot + spot_step, strike, tenor, rate, sigma, "call", dividend_yield
     )
     delta = (up - down) / (2.0 * spot_step)
@@ -81,7 +82,8 @@ def test_floor_discontinuity_is_not_reported_as_an_iv_solution() -> None:
     assert iv is None
 
 
-def test_crr_iv_round_trip_remains_accurate() -> None:
+def test_lr_iv_round_trip_remains_accurate() -> None:
+    """IV inversion must recover the seed sigma within 5e-5 using the LR pricer."""
     expected_iv = 0.25
     inputs = {
         "S": 559.3900146484375,
@@ -91,7 +93,7 @@ def test_crr_iv_round_trip_remains_accurate() -> None:
         "option_type": "call",
         "q": 0.0050769586972067,
     }
-    market_price = american_option_price_crr(sigma=expected_iv, **inputs)
+    market_price = american_option_price_lr(sigma=expected_iv, **inputs)
     actual_iv = compute_iv(market_price=market_price, **inputs)
 
     assert actual_iv is not None
@@ -107,10 +109,10 @@ def test_reusing_iv_bracket_preserves_result_and_avoids_two_prices(monkeypatch) 
         "option_type": "put",
         "q": 0.012,
     }
-    market_price = american_option_price_crr(sigma=0.25, **inputs)
-    low_residual = american_option_price_crr(sigma=utils.IV_MIN_SIGMA, **inputs) - market_price
-    high_residual = american_option_price_crr(sigma=utils.IV_MAX_SIGMA, **inputs) - market_price
-    original_price = utils.american_option_price_crr
+    market_price = american_option_price_lr(sigma=0.25, **inputs)
+    low_residual = american_option_price_lr(sigma=utils.IV_MIN_SIGMA, **inputs) - market_price
+    high_residual = american_option_price_lr(sigma=utils.IV_MAX_SIGMA, **inputs) - market_price
+    original_price = utils.american_option_price_lr
     calls = 0
 
     def counted_price(*args, **kwargs):
@@ -118,7 +120,7 @@ def test_reusing_iv_bracket_preserves_result_and_avoids_two_prices(monkeypatch) 
         calls += 1
         return original_price(*args, **kwargs)
 
-    monkeypatch.setattr(utils, "american_option_price_crr", counted_price)
+    monkeypatch.setattr(utils, "american_option_price_lr", counted_price)
     uncached = utils.compute_iv(market_price=market_price, **inputs)
     uncached_calls = calls
     calls = 0
