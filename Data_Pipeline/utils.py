@@ -34,12 +34,14 @@ if _LR_BACKEND == "python":
 # American-option Leisen-Reimer pricing
 # ---------------------------------------------------------------------------
 
-DEFAULT_LR_STEPS = 101
-MIN_LR_STEPS = 51
+DEFAULT_LR_STEPS = 65
+MIN_LR_STEPS = 31
 MAX_LR_STEPS = 1001
 IV_MIN_SIGMA = 0.001
 IV_MAX_SIGMA = 5.0
 IV_PRICE_TOLERANCE = 1e-6
+IV_SIGMA_TOLERANCE = 1e-4
+IV_MAX_ITERATIONS = 6
 
 
 def option_intrinsic_value(
@@ -56,10 +58,9 @@ def option_intrinsic_value(
 # Step count is always forced to an odd integer (LR requirement for strike-centring).
 def _resolve_lr_steps(T: float, steps: Optional[int] = None) -> int:
     if steps is not None:
-        n = max(MIN_LR_STEPS, int(steps))
+        n = max(3, int(steps))
     else:
-        scaled = int(np.ceil(max(T, 1.0 / 365.25) * 365.25 * 2))
-        n = int(min(MAX_LR_STEPS, max(MIN_LR_STEPS, scaled)))
+        n = DEFAULT_LR_STEPS
     # Leisen-Reimer requires an odd step count for correct strike centring.
     if n % 2 == 0:
         n += 1
@@ -230,6 +231,7 @@ def _american_option_price_lr_single(
     option_type: str = "call",
     q: float = 0.0,
     steps: Optional[int] = None,
+    scratch: Optional[tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
 ) -> float:
     """
     Price an American option with a single Leisen-Reimer binomial tree.
@@ -260,21 +262,32 @@ def _american_option_price_lr_single(
             and S <= 1e100 and K <= 1e100):
         return _native_price_single_lr(S, K, u, d, p, disc, n_steps, int(option_type == "call"))
 
-    terminal_idx = np.arange(n_steps + 1)
-    stock_prices = S * (u ** (n_steps - terminal_idx)) * (d ** terminal_idx)
-    if option_type == "call":
-        option_values = np.maximum(stock_prices - K, 0.0)
+    if scratch is None or len(scratch[0]) < n_steps + 1:
+        stock_prices = np.empty(n_steps + 1, dtype=np.float64)
+        option_values = np.empty(n_steps + 1, dtype=np.float64)
+        cont_buffer = np.empty(n_steps + 1, dtype=np.float64)
     else:
-        option_values = np.maximum(K - stock_prices, 0.0)
+        stock_prices, option_values, cont_buffer = scratch
 
+    terminal_idx = np.arange(n_steps + 1, dtype=np.float64)
+    stock_prices[:n_steps + 1] = S * (u ** (n_steps - terminal_idx)) * (d ** terminal_idx)
+    is_call = (option_type == "call")
+    if is_call:
+        np.maximum(stock_prices[:n_steps + 1] - K, 0.0, out=option_values[:n_steps + 1])
+    else:
+        np.maximum(K - stock_prices[:n_steps + 1], 0.0, out=option_values[:n_steps + 1])
+
+    down_p = 1.0 - p
     for step in range(n_steps - 1, -1, -1):
-        stock_prices = stock_prices[:-1] / u
-        continuation = disc * (p * option_values[:-1] + (1.0 - p) * option_values[1:])
-        if option_type == "call":
-            exercise = np.maximum(stock_prices - K, 0.0)
+        stock_prices[:step + 1] /= u
+        np.multiply(option_values[:step + 1], p, out=cont_buffer[:step + 1])
+        cont_buffer[:step + 1] += down_p * option_values[1:step + 2]
+        cont_buffer[:step + 1] *= disc
+        if is_call:
+            np.maximum(stock_prices[:step + 1] - K, 0.0, out=option_values[:step + 1])
         else:
-            exercise = np.maximum(K - stock_prices, 0.0)
-        option_values = np.maximum(continuation, exercise)
+            np.maximum(K - stock_prices[:step + 1], 0.0, out=option_values[:step + 1])
+        np.maximum(cont_buffer[:step + 1], option_values[:step + 1], out=option_values[:step + 1])
 
     return float(option_values[0])
 
@@ -288,6 +301,7 @@ def american_option_price_lr(
     option_type: str = "call",
     q: float = 0.0,
     steps: Optional[int] = None,
+    scratch: Optional[tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
 ) -> float:
     """
     Price an American option with a Leisen-Reimer binomial tree.
@@ -308,7 +322,7 @@ def american_option_price_lr(
     if params is None:
         return math.nan
     n_steps = params[0]
-    price = _american_option_price_lr_single(S, K, T, r, sigma, option_type, q, n_steps)
+    price = _american_option_price_lr_single(S, K, T, r, sigma, option_type, q, n_steps, scratch=scratch)
     if not math.isfinite(price):
         return math.nan
     return price
@@ -376,41 +390,169 @@ def hypothetical_atm_greeks(sigma: float, S: float, T: float, r: float,
 # ---------------------------------------------------------------------------
 # Implied Volatility
 # ---------------------------------------------------------------------------
-# AGENTS: Mission-critical public IV solver; flatfile_iv.py calls this for every eligible option row.
-def compute_iv(market_price: float, S: float, K: float, T: float,
-               r: float, option_type: str = "call",
-               q: float = 0.0,
-               steps: Optional[int] = None,
-               bracket_residuals: Optional[tuple[float, float]] = None) -> Optional[float]:
+
+def _bsm_vega(
+    S: float,
+    K: float,
+    T: float,
+    r: float,
+    sigma: float,
+    q: float = 0.0,
+) -> float:
     """
-    Compute American-option implied volatility using Leisen-Reimer tree inversion.
+    Closed-form European Black-Scholes Vega: V_BSM = S * exp(-q * T) * sqrt(T) * phi(d1).
+    Used as the analytical denominator for Quasi-Newton American IV solves.
+    """
+    if S <= 0.0 or K <= 0.0 or sigma <= 0.0 or T <= 0.0:
+        return 0.0
+    sqrt_t = math.sqrt(T)
+    sigma_sqrt_t = sigma * sqrt_t
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / sigma_sqrt_t
+    pdf_d1 = math.exp(-0.5 * d1 * d1) / math.sqrt(2.0 * math.pi)
+    return float(S * math.exp(-q * T) * sqrt_t * pdf_d1)
 
-    Returns None when IV cannot be computed (arbitrage violation, illiquid,
-    or numerical failure).
 
-    Bounds: sigma in [0.001, 5.0]  (0.1 % – 500 % annualised volatility)
-    bracket_residuals, when supplied, must be the already computed pricing
-    errors at those two bounds for these same option inputs.
+def _european_iv_seed(
+    market_price: float,
+    S: float,
+    K: float,
+    T: float,
+    r: float,
+    option_type: str = "call",
+    q: float = 0.0,
+) -> float:
+    """
+    Compute closed-form European inversion seed (Corrado-Miller 1996 with Halley fallback)
+    and adjust upward for in-the-money American puts.
+    """
+    is_call = (option_type.lower() == "call")
+    disc_q = math.exp(-q * T)
+    disc_r = math.exp(-r * T)
+    Sd = S * disc_q
+    Kd = K * disc_r
+    M = Sd - Kd
+    A = market_price - 0.5 * M if is_call else market_price + 0.5 * M
+    D = A * A - (M * M) / math.pi
+    sqrt_t = math.sqrt(max(T, 1e-8))
+
+    if D >= 0.0 and (Sd + Kd) > 0.0:
+        sigma_seed = (math.sqrt(2.0 * math.pi) / ((Sd + Kd) * sqrt_t)) * (A + math.sqrt(D))
+    else:
+        # Microsecond European inversion fallback (Halley's method on Black-Scholes)
+        sigma = 0.3
+        for _ in range(4):
+            sigma_sqrt_t = max(1e-8, sigma * sqrt_t)
+            d1 = (math.log(max(1e-12, Sd / Kd)) + 0.5 * sigma * sigma * T) / sigma_sqrt_t
+            d2 = d1 - sigma_sqrt_t
+            pdf = math.exp(-0.5 * min(700.0, d1 * d1)) / math.sqrt(2.0 * math.pi)
+            vega = Sd * sqrt_t * pdf
+            c = Sd * _norm_cdf(d1) - Kd * _norm_cdf(d2) if is_call else Kd * _norm_cdf(-d2) - Sd * _norm_cdf(-d1)
+            diff = c - market_price
+            if abs(diff) < 1e-8 or vega < 1e-15:
+                break
+            step = diff / vega
+            volga = d1 * d2 / max(1e-6, sigma)
+            denom = 1.0 - 0.5 * step * volga
+            denom = denom if abs(denom) > 1e-3 else 1.0
+            sigma = max(IV_MIN_SIGMA, min(IV_MAX_SIGMA, sigma - step / denom))
+        sigma_seed = sigma
+
+    # For ITM American puts, adjust the seed upward:
+    # sigma_0 ~= sigma_seed * (1 + max(0, (K - S)/K))
+    if not is_call and K > S:
+        sigma_seed *= (1.0 + (K - S) / K)
+
+    return float(min(IV_MAX_SIGMA, max(IV_MIN_SIGMA, sigma_seed)))
+
+
+# AGENTS: Mission-critical public IV solver; flatfile_iv.py calls this for every eligible option row.
+def compute_iv(
+    market_price: float,
+    S: float,
+    K: float,
+    T: float,
+    r: float,
+    option_type: str = "call",
+    q: float = 0.0,
+    steps: Optional[int] = None,
+    bracket_residuals: Optional[tuple[float, float]] = None,
+    initial_guess: Optional[float] = None,
+    return_nan: bool = False,
+) -> Optional[float]:
+    """
+    Compute American-option implied volatility using an optimized Quasi-Newton pipeline
+    with closed-form European Vega and Leisen-Reimer binomial tree pricing.
+
+    Requirements:
+    1. Arbitrage & Boundary Fast-Fail:
+       - If P <= intrinsic (max(0, S - K) for calls, max(0, K - S) for puts), return 0.0 or NaN/None.
+       - If P >= S (call) or P >= K (put), return NaN/None.
+    2. Seeding Logic:
+       - Accept optional initial_guess for historical warm-starting (sigma_{t-1}).
+       - Otherwise use closed-form European inversion (Corrado-Miller with Halley fallback).
+       - For ITM American puts, adjust upward: sigma_0 ~= sigma_seed * (1 + max(0, (K-S)/K)).
+    3. Lattice Engine (Leisen-Reimer):
+       - Enforce odd step count (default: N = 65).
+       - Flat 1D scratch buffer backward induction without dynamic reallocations.
+    4. Root Finder (Quasi-Newton with European Vega):
+       - sigma_{k+1} = sigma_k - (V_LR(sigma_k) - P_market) / V_BSM(sigma_k)
+       - Closed-form analytical BSM Vega denominator (zero tree bumping).
+       - Safeguards: Clamp to [0.001, 5.0], bounded bisection fallback on divergence or failure to improve.
+    5. Convergence Criteria & Exit:
+       - Terminate when |sigma_{k+1} - sigma_k| < 1e-4 or |V_LR(sigma_k) - P_market| < max(0.005, 0.001 * P_market).
+       - Cap maximum iterations at 6.
     """
     numeric_inputs = (market_price, S, K, T, r, q)
     if not all(math.isfinite(float(value)) for value in numeric_inputs):
-        return None
-    if T <= 0 or market_price <= 0 or S <= 0 or K <= 0:
-        return None
+        return math.nan if return_nan else None
+    if T <= 0.0 or market_price <= 0.0 or S <= 0.0 or K <= 0.0:
+        return math.nan if return_nan else None
 
+    option_type = option_type.lower()
     intrinsic = option_intrinsic_value(S, K, option_type)
     upper = S if option_type == "call" else K
-    if market_price < intrinsic - 1e-6 or market_price > upper + 1e-6:
-        return None
-    # At (or within pricing tolerance of) immediate-exercise value, an
-    # American option can have the same price across a range of volatilities.
-    # Returning the first bisection point in that flat region fabricates an IV.
-    if market_price <= intrinsic + IV_PRICE_TOLERANCE:
-        return None
 
-    # AGENTS: Mission-critical nested solver target; used only inside compute_iv().
-    def objective(sigma: float) -> float:
-        return american_option_price_lr(
+    # 1. Arbitrage & Boundary Fast-Fail
+    if market_price <= intrinsic + 1e-12:
+        if abs(market_price - intrinsic) <= 1e-12:
+            return 0.0 if return_nan else None
+        return math.nan if return_nan else None
+    if market_price >= upper - 1e-12:
+        return math.nan if return_nan else None
+
+    # Check optional legacy bracket residuals if provided
+    if bracket_residuals is not None:
+        lo_val, hi_val = bracket_residuals
+        if math.isfinite(lo_val) and math.isfinite(hi_val):
+            if abs(lo_val) <= IV_PRICE_TOLERANCE:
+                return IV_MIN_SIGMA
+            if abs(hi_val) <= IV_PRICE_TOLERANCE:
+                return IV_MAX_SIGMA
+            if lo_val * hi_val > 0.0:
+                return math.nan if return_nan else None
+
+    # 3. Lattice Engine: enforce odd step count (default: N = 65)
+    n_steps = _resolve_lr_steps(T, steps)
+    scratch = (
+        np.empty(n_steps + 1, dtype=np.float64),
+        np.empty(n_steps + 1, dtype=np.float64),
+        np.empty(n_steps + 1, dtype=np.float64),
+    )
+
+    # 2. Seeding Logic
+    a = IV_MIN_SIGMA
+    b = IV_MAX_SIGMA
+    if initial_guess is not None and math.isfinite(initial_guess):
+        sigma = float(min(b, max(a, float(initial_guess))))
+    else:
+        sigma = _european_iv_seed(market_price, S, K, T, r, option_type, q)
+
+    prev_res: Optional[float] = None
+    tol_price_rel = max(0.005, 0.001 * market_price)
+
+    # 4 & 5. Quasi-Newton Loop with safeguards and max 6 iterations
+    for _ in range(IV_MAX_ITERATIONS):
+        v = american_option_price_lr(
             S=S,
             K=K,
             T=T,
@@ -418,53 +560,196 @@ def compute_iv(market_price: float, S: float, K: float, T: float,
             sigma=sigma,
             option_type=option_type,
             q=q,
-            steps=steps,
-        ) - market_price
+            steps=n_steps,
+            scratch=scratch,
+        )
+        if not math.isfinite(v):
+            return math.nan if return_nan else None
 
-    # The pipeline row worker already prices both endpoints to classify a
-    # missing root. Reuse those prices instead of building four extra trees.
-    if bracket_residuals is None:
-        try:
-            lo_val = objective(IV_MIN_SIGMA)
-            hi_val = objective(IV_MAX_SIGMA)
-        except Exception:
-            return None
-    else:
-        lo_val, hi_val = bracket_residuals
+        res = v - market_price
+        abs_res = abs(res)
 
-    if not math.isfinite(lo_val) or not math.isfinite(hi_val):
-        return None
-    if abs(lo_val) <= IV_PRICE_TOLERANCE:
-        return IV_MIN_SIGMA
-    if abs(hi_val) <= IV_PRICE_TOLERANCE:
-        return IV_MAX_SIGMA
-    if lo_val * hi_val > 0:
-        # Both same sign — no root in interval
-        return None
-
-    lo = IV_MIN_SIGMA
-    hi = IV_MAX_SIGMA
-    for _ in range(200):
-        mid = 0.5 * (lo + hi)
-        mid_val = objective(mid)
-        if not math.isfinite(mid_val):
-            return None
-        if abs(mid_val) < IV_PRICE_TOLERANCE:
-            return float(mid)
-        if lo_val * mid_val <= 0:
-            hi = mid
-            hi_val = mid_val
+        # Update dynamic bracket
+        if res > 0.0:
+            b = min(b, sigma)
         else:
-            lo = mid
-            lo_val = mid_val
+            a = max(a, sigma)
 
-    iv = 0.5 * (lo + hi)
-    if not math.isfinite(iv) or not IV_MIN_SIGMA <= iv <= IV_MAX_SIGMA:
-        return None
-    residual = objective(iv)
-    if not math.isfinite(residual) or abs(residual) > IV_PRICE_TOLERANCE:
-        return None
-    return float(iv)
+        # Convergence on price residual
+        if abs_res < tol_price_rel:
+            return float(sigma)
+
+        # Closed-form European Vega denominator
+        vega = _bsm_vega(S=S, K=K, T=T, r=r, sigma=sigma, q=q)
+
+        # Quasi-Newton proposal and safeguard checks
+        take_bisection = False
+        if vega < 1e-12:
+            take_bisection = True
+        else:
+            newton_step = res / vega
+            sigma_newton = sigma - newton_step
+            if not math.isfinite(sigma_newton) or sigma_newton <= a or sigma_newton >= b:
+                take_bisection = True
+            elif prev_res is not None and abs_res >= prev_res:
+                take_bisection = True
+
+        if take_bisection:
+            sigma_next = 0.5 * (a + b)
+        else:
+            sigma_next = sigma_newton
+
+        # Domain clamping
+        sigma_next = min(IV_MAX_SIGMA, max(IV_MIN_SIGMA, sigma_next))
+
+        # Convergence on parameter step change
+        if abs(sigma_next - sigma) < IV_SIGMA_TOLERANCE:
+            return float(sigma_next)
+
+        prev_res = abs_res
+        sigma = sigma_next
+
+    return math.nan if return_nan else None
+
+
+def compute_iv_vectorized(
+    market_prices: np.ndarray,
+    S: np.ndarray,
+    K: np.ndarray,
+    T: np.ndarray,
+    r: np.ndarray,
+    option_types: np.ndarray | list[str],
+    q: Optional[np.ndarray] = None,
+    steps: Optional[int] = 65,
+    initial_guess: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    Vectorized implied volatility solver across contract slices.
+    """
+    market_prices = np.asarray(market_prices, dtype=np.float64)
+    S = np.asarray(S, dtype=np.float64)
+    K = np.asarray(K, dtype=np.float64)
+    T = np.asarray(T, dtype=np.float64)
+    r = np.asarray(r, dtype=np.float64)
+    if q is None:
+        q = np.zeros_like(market_prices)
+    else:
+        q = np.asarray(q, dtype=np.float64)
+
+    is_call = np.asarray([str(opt).lower() == "call" for opt in option_types], dtype=bool)
+    intrinsic = np.where(is_call, np.maximum(0.0, S - K), np.maximum(0.0, K - S))
+    upper = np.where(is_call, S, K)
+
+    results = np.full(market_prices.shape, np.nan, dtype=np.float64)
+
+    zero_mask = (market_prices <= intrinsic + 1e-12) & (market_prices >= intrinsic - 1e-12)
+    results[zero_mask] = 0.0
+
+    valid_mask = (
+        (market_prices > intrinsic + 1e-12)
+        & (market_prices < upper - 1e-12)
+        & (T > 0.0)
+        & (S > 0.0)
+        & (K > 0.0)
+        & np.isfinite(market_prices)
+        & np.isfinite(S)
+        & np.isfinite(K)
+        & np.isfinite(T)
+        & np.isfinite(r)
+        & np.isfinite(q)
+    )
+
+    active_indices = np.where(valid_mask)[0]
+    if len(active_indices) == 0:
+        return results
+
+    n_steps = _resolve_lr_steps(1.0, steps)
+    scratch = (
+        np.empty(n_steps + 1, dtype=np.float64),
+        np.empty(n_steps + 1, dtype=np.float64),
+        np.empty(n_steps + 1, dtype=np.float64),
+    )
+
+    sigmas = np.empty(len(market_prices), dtype=np.float64)
+    for idx in active_indices:
+        if initial_guess is not None and math.isfinite(initial_guess[idx]):
+            sigmas[idx] = min(IV_MAX_SIGMA, max(IV_MIN_SIGMA, float(initial_guess[idx])))
+        else:
+            opt_str = "call" if is_call[idx] else "put"
+            sigmas[idx] = _european_iv_seed(
+                market_prices[idx], S[idx], K[idx], T[idx], r[idx], opt_str, q[idx]
+            )
+
+    a = np.full(len(market_prices), IV_MIN_SIGMA, dtype=np.float64)
+    b = np.full(len(market_prices), IV_MAX_SIGMA, dtype=np.float64)
+    prev_res = np.full(len(market_prices), np.nan, dtype=np.float64)
+
+    active = active_indices
+    for _ in range(IV_MAX_ITERATIONS):
+        if len(active) == 0:
+            break
+        converged_this_round = []
+        for idx in active:
+            opt_str = "call" if is_call[idx] else "put"
+            v = american_option_price_lr(
+                S=S[idx],
+                K=K[idx],
+                T=T[idx],
+                r=r[idx],
+                sigma=sigmas[idx],
+                option_type=opt_str,
+                q=q[idx],
+                steps=n_steps,
+                scratch=scratch,
+            )
+            if not math.isfinite(v):
+                converged_this_round.append(idx)
+                continue
+
+            res = v - market_prices[idx]
+            abs_res = abs(res)
+            if res > 0.0:
+                b[idx] = min(b[idx], sigmas[idx])
+            else:
+                a[idx] = max(a[idx], sigmas[idx])
+
+            tol_price = max(0.005, 0.001 * market_prices[idx])
+            if abs_res < tol_price:
+                results[idx] = sigmas[idx]
+                converged_this_round.append(idx)
+                continue
+
+            vega = _bsm_vega(S[idx], K[idx], T[idx], r[idx], sigmas[idx], q[idx])
+            take_bisection = False
+            if vega < 1e-12:
+                take_bisection = True
+            else:
+                step_val = res / vega
+                sigma_newton = sigmas[idx] - step_val
+                if not math.isfinite(sigma_newton) or sigma_newton <= a[idx] or sigma_newton >= b[idx]:
+                    take_bisection = True
+                elif math.isfinite(prev_res[idx]) and abs_res >= prev_res[idx]:
+                    take_bisection = True
+
+            if take_bisection:
+                sigma_next = 0.5 * (a[idx] + b[idx])
+            else:
+                sigma_next = sigma_newton
+
+            sigma_next = min(IV_MAX_SIGMA, max(IV_MIN_SIGMA, sigma_next))
+
+            if abs(sigma_next - sigmas[idx]) < IV_SIGMA_TOLERANCE:
+                results[idx] = sigma_next
+                converged_this_round.append(idx)
+                continue
+
+            prev_res[idx] = abs_res
+            sigmas[idx] = sigma_next
+
+        if converged_this_round:
+            active = np.setdiff1d(active, converged_this_round)
+
+    return results
 
 
 # ---------------------------------------------------------------------------

@@ -32,8 +32,21 @@ static PyObject* price_single_lr(PyObject*, PyObject* args) {
     }
 
     try {
-        std::vector<double> stock_prices(static_cast<size_t>(steps) + 1);
-        std::vector<double> option_values(static_cast<size_t>(steps) + 1);
+        constexpr int STACK_STEPS = 1024;
+        double stack_stock[STACK_STEPS + 1];
+        double stack_values[STACK_STEPS + 1];
+        std::vector<double> heap_stock;
+        std::vector<double> heap_values;
+        double* stock_prices = stack_stock;
+        double* option_values = stack_values;
+
+        if (steps > STACK_STEPS) {
+            heap_stock.resize(static_cast<size_t>(steps) + 1);
+            heap_values.resize(static_cast<size_t>(steps) + 1);
+            stock_prices = heap_stock.data();
+            option_values = heap_values.data();
+        }
+
         for (int index = 0; index <= steps; ++index) {
             const double stock = spot * std::pow(up, steps - index) * std::pow(down, index);
             if (!std::isfinite(stock)) return PyFloat_FromDouble(NAN);

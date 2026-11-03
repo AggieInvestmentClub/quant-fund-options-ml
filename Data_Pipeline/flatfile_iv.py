@@ -604,29 +604,6 @@ def compute_row_iv_task(task: IvTask) -> IvResult:
     if close <= intrinsic + IV_PRICE_TOLERANCE:
         return None, "nonpositive_time_value"
 
-    # AGENTS: Mission-critical nested solver target; local fast IV solve used before falling back to utils.compute_iv().
-    def objective(sigma: float) -> float:
-        return american_option_price_lr(
-            S=float(underlying_close),
-            K=float(strike),
-            T=float(time_to_expiry_years),
-            r=float(risk_free_rate),
-            sigma=sigma,
-            option_type=option_type,
-            q=q,
-        ) - float(close)
-
-    try:
-        lo_val = objective(IV_MIN_SIGMA)
-        hi_val = objective(IV_MAX_SIGMA)
-    except Exception:
-        return None, "solver_error"
-
-    if not all(math.isfinite(float(value)) for value in (lo_val, hi_val)):
-        return None, "solver_error"
-    if lo_val * hi_val > 0:
-        return None, "no_root_in_range"
-
     iv = compute_iv(
         market_price=float(close),
         S=float(underlying_close),
@@ -635,11 +612,10 @@ def compute_row_iv_task(task: IvTask) -> IvResult:
         r=float(risk_free_rate),
         option_type=option_type,
         q=q,
-        bracket_residuals=(lo_val, hi_val),
     )
-    if iv is None:
+    if iv is None or not math.isfinite(iv):
         return None, "solver_error"
-    return iv, "ok"
+    return float(iv), "ok"
 
 # AGENTS: Mission-critical row worker; computes hypothetical ATM Greeks for one option row.
 def compute_row_atm_greeks_task(task: GreekTask) -> dict:
