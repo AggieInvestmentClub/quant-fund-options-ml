@@ -333,6 +333,52 @@ def parse_opra_option_tickers(tickers: pd.Series) -> pd.DataFrame:
         index=tickers.index,
     )
 
+
+def resolve_target_underlyings(
+    allowed_underlyings: Optional[set[str]],
+    testing: bool,
+    test_stock: str,
+) -> Optional[set[str]]:
+    """Determine the active underlying set for fast pre-filtering."""
+    if testing:
+        resolved_stock = normalize_underlying_symbol(test_stock)
+        stock_set = {resolved_stock} if resolved_stock else set()
+        return stock_set if allowed_underlyings is None else (allowed_underlyings & stock_set)
+    return allowed_underlyings
+
+
+def prefilter_raw_opra_frame(
+    df: pd.DataFrame,
+    target_underlyings: Optional[set[str]],
+    trade_date: date,
+    min_dte: int = DTE_MIN_DAYS,
+    max_dte: int = DTE_MAX_DAYS,
+) -> pd.DataFrame:
+    """Filter raw OPRA DataFrame before expensive regex parsing and metadata expansion."""
+    if df.empty or "ticker" not in df.columns:
+        return df
+
+    tickers = df["ticker"]
+
+    # 1. Underlying pre-filter (fastest: prunes > 99% of rows when targets exist)
+    if target_underlyings is not None:
+        if not target_underlyings:
+            return df.iloc[0:0].copy()
+        underlying_slice = tickers.str.slice(2, -15)
+        df = df[underlying_slice.isin(target_underlyings)]
+        if df.empty:
+            return df
+        tickers = df["ticker"]
+
+    # 2. DTE window pre-filter (lexicographical check on YYMMDD)
+    t_date = pd.Timestamp(trade_date)
+    min_exp_str = (t_date + timedelta(days=min_dte)).strftime("%y%m%d")
+    max_exp_str = (t_date + timedelta(days=max_dte)).strftime("%y%m%d")
+    expiry_slice = tickers.str.slice(-15, -9)
+    df = df[expiry_slice.between(min_exp_str, max_exp_str)]
+
+    return df.copy()
+
 # AGENTS: Mission-critical universe guard; filters malformed or unsupported underlying symbols.
 def is_supported_underlying(symbol: str) -> bool:
     return bool(symbol and SUPPORTED_UNDERLYING_RE.fullmatch(symbol))
@@ -791,6 +837,12 @@ def process_file(
     print(f"  processing {rel_path}")
 
     df = pd.read_csv(path, compression="gzip")
+    if df.empty:
+        write_output_csv_atomic(df, output_path)
+        return output_path, pd.DataFrame(), close_cache_updates
+
+    target_underlyings = resolve_target_underlyings(allowed_underlyings, testing, test_stock)
+    df = prefilter_raw_opra_frame(df, target_underlyings, trade_date)
     if df.empty:
         write_output_csv_atomic(df, output_path)
         return output_path, pd.DataFrame(), close_cache_updates

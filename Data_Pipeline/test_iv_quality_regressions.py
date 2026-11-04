@@ -389,3 +389,49 @@ def test_regular_greeks_source_iv_coverage_rejects_truncated_far_window(tmp_path
     assert flatfile_regular_greeks.source_iv_output_covers_target(iv_csv) is False
     assert flatfile_regular_greeks.existing_regular_output_covers_target(iv_csv) is False
 
+
+def test_resolve_target_underlyings() -> None:
+    assert flatfile_iv.resolve_target_underlyings(None, False, "AAPL") is None
+    assert flatfile_iv.resolve_target_underlyings({"AAPL", "MSFT"}, False, "AAPL") == {"AAPL", "MSFT"}
+    assert flatfile_iv.resolve_target_underlyings({"AAPL", "MSFT"}, True, "AAPL") == {"AAPL"}
+    assert flatfile_iv.resolve_target_underlyings({"MSFT"}, True, "AAPL") == set()
+    assert flatfile_iv.resolve_target_underlyings(None, True, "aapl") == {"AAPL"}
+
+
+def test_prefilter_raw_opra_frame() -> None:
+    # 2026-04-21 trade date: 30 DTE is 2026-05-21, 90 DTE is 2026-07-20
+    trade_date = date(2026, 4, 21)
+    df = pd.DataFrame(
+        {
+            "ticker": [
+                "O:AAPL260525C00150000",  # AAPL, in DTE window (~34 DTE) -> KEEP
+                "O:AAPL260425C00150000",  # AAPL, outside DTE window (4 DTE) -> DROP
+                "O:AAPL261016C00150000",  # AAPL, outside DTE window (~178 DTE) -> DROP
+                "O:MSFT260525C00400000",  # MSFT, in DTE window -> DROP if target is AAPL
+                "not-an-option",          # Malformed -> DROP
+            ],
+            "volume": [10, 10, 10, 10, 10],
+            "close": [5.0, 5.0, 5.0, 5.0, 5.0],
+        }
+    )
+
+    # 1. Target AAPL
+    filtered = flatfile_iv.prefilter_raw_opra_frame(df, {"AAPL"}, trade_date)
+    assert len(filtered) == 1
+    assert filtered.iloc[0]["ticker"] == "O:AAPL260525C00150000"
+
+    # 2. Both AAPL and MSFT
+    filtered_both = flatfile_iv.prefilter_raw_opra_frame(df, {"AAPL", "MSFT"}, trade_date)
+    assert len(filtered_both) == 2
+    assert set(filtered_both["ticker"]) == {"O:AAPL260525C00150000", "O:MSFT260525C00400000"}
+
+    # 3. Target is None (all underlyings, only DTE filter applied)
+    filtered_all = flatfile_iv.prefilter_raw_opra_frame(df, None, trade_date)
+    assert len(filtered_all) == 2
+    assert set(filtered_all["ticker"]) == {"O:AAPL260525C00150000", "O:MSFT260525C00400000"}
+
+    # 4. Empty and edge cases
+    assert flatfile_iv.prefilter_raw_opra_frame(pd.DataFrame(), {"AAPL"}, trade_date).empty
+    assert flatfile_iv.prefilter_raw_opra_frame(df, set(), trade_date).empty
+
+
