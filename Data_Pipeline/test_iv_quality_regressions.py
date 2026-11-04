@@ -489,4 +489,47 @@ def test_streaming_opra_filter_parity(tmp_path) -> None:
             os.environ.pop("OPTIONS_LR_BACKEND", None)
 
 
+def test_batch_regular_greeks_parity() -> None:
+    from flatfile_regular_greeks import compute_row_regular_greeks_task, add_regular_greeks
+
+    test_tasks = [
+        (0.25, 266.17, 265.0, 0.15, 0.0369, 0.0, "call"),
+        (0.25, 266.17, 265.0, 0.15, 0.0369, 0.0, "put"),
+        (0.30, 266.17, 250.0, 0.25, 0.0369, 0.0, "call"),
+        (0.30, 266.17, 250.0, 0.25, 0.0369, 0.0, "put"),
+        (0.15, 100.0, 105.0, 0.08, 0.04, 0.012, "call"),
+        (0.15, 100.0, 105.0, 0.08, 0.04, 0.012, "put"),
+        (0.50, 50.0, 70.0, 0.5, 0.05, 0.0, "call"),
+        (0.50, 50.0, 30.0, 0.5, 0.05, 0.0, "put"),
+        (None, 100.0, 100.0, 0.1, 0.03, 0.0, "call"),
+        (0.2, None, 100.0, 0.1, 0.03, 0.0, "call"),
+        (0.2, 100.0, 100.0, -0.1, 0.03, 0.0, "call"),
+    ]
+
+    df = pd.DataFrame(
+        {
+            "implied_volatility": [t[0] for t in test_tasks],
+            "underlying_close": [t[1] for t in test_tasks],
+            "strike": [t[2] for t in test_tasks],
+            "time_to_expiry_years": [t[3] for t in test_tasks],
+            "risk_free_rate": [t[4] for t in test_tasks],
+            "dividend_yield": [t[5] for t in test_tasks],
+            "option_type": [t[6] for t in test_tasks],
+        }
+    )
+
+    enriched = add_regular_greeks(df, row_workers=1, trade_date=date(2026, 4, 21))
+
+    for i, t in enumerate(test_tasks):
+        ref = compute_row_regular_greeks_task(t)
+        for g in ["delta", "gamma", "theta", "vega"]:
+            val = enriched.iloc[i][g]
+            ref_val = ref[g]
+            if ref_val is None or math.isnan(ref_val):
+                assert pd.isna(val)
+            else:
+                assert math.isclose(val, ref_val, rel_tol=1e-12, abs_tol=1e-12)
+
+
+
 

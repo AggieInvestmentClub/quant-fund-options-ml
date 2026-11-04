@@ -20,14 +20,17 @@ if _LR_BACKEND not in {"auto", "python", "native"}:
     raise ValueError("OPTIONS_LR_BACKEND (or OPTIONS_CRR_BACKEND) must be auto, python, or native")
 try:
     from _lr_native import price_single_lr as _native_price_single_lr
+    from _lr_native import batch_regular_greeks as _native_batch_regular_greeks
 except ImportError as exc:
     if _LR_BACKEND == "native":
         raise RuntimeError(
             "Native LR extension is unavailable; run Data_Pipeline/native/build.py"
         ) from exc
     _native_price_single_lr = None
+    _native_batch_regular_greeks = None
 if _LR_BACKEND == "python":
     _native_price_single_lr = None
+    _native_batch_regular_greeks = None
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +388,91 @@ def hypothetical_atm_greeks(sigma: float, S: float, T: float, r: float,
         "theta": float(theta),
         "vega": float(vega),
     }
+
+
+def batch_regular_greeks(
+    spots: np.ndarray,
+    strikes: np.ndarray,
+    times: np.ndarray,
+    rates: np.ndarray,
+    sigmas: np.ndarray,
+    divs: np.ndarray,
+    is_calls: np.ndarray,
+    steps: Optional[int] = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Batch compute regular contract-strike Greeks (delta, gamma, theta, vega).
+    Uses the native C++ Leisen-Reimer kernel if available, otherwise falls back
+    to pure-Python finite difference evaluation.
+    """
+    n = len(spots)
+    deltas = np.empty(n, dtype=np.float64)
+    gammas = np.empty(n, dtype=np.float64)
+    thetas = np.empty(n, dtype=np.float64)
+    vegas = np.empty(n, dtype=np.float64)
+
+    if n == 0:
+        return deltas, gammas, thetas, vegas
+
+    resolved_steps = DEFAULT_LR_STEPS if steps is None else _resolve_lr_steps(1.0, steps)
+
+    if _native_batch_regular_greeks is not None:
+        spots_c = np.ascontiguousarray(spots, dtype=np.float64)
+        strikes_c = np.ascontiguousarray(strikes, dtype=np.float64)
+        times_c = np.ascontiguousarray(times, dtype=np.float64)
+        rates_c = np.ascontiguousarray(rates, dtype=np.float64)
+        sigmas_c = np.ascontiguousarray(sigmas, dtype=np.float64)
+        divs_c = np.ascontiguousarray(divs, dtype=np.float64)
+        is_calls_c = np.ascontiguousarray(is_calls, dtype=np.int8)
+
+        _native_batch_regular_greeks(
+            spots_c, strikes_c, times_c, rates_c, sigmas_c, divs_c, is_calls_c,
+            deltas, gammas, thetas, vegas, resolved_steps
+        )
+        return deltas, gammas, thetas, vegas
+
+    # Pure Python fallback
+    for i in range(n):
+        S = float(spots[i])
+        K = float(strikes[i])
+        T = float(times[i])
+        r = float(rates[i])
+        sigma = float(sigmas[i])
+        q = float(divs[i])
+        call_flag = int(is_calls[i])
+        if call_flag not in (0, 1) or any(
+            not math.isfinite(v) for v in (S, K, T, r, sigma, q)
+        ) or sigma <= 0 or S <= 0 or K <= 0 or T <= 0:
+            deltas[i] = gammas[i] = thetas[i] = vegas[i] = math.nan
+            continue
+
+        q = max(0.0, q)
+        option_type = "call" if call_flag == 1 else "put"
+        dS = max(0.01, 0.01 * S)
+        d_sigma = max(1e-4, 0.01 * sigma)
+        dT = min(1.0 / 365.25, max(T / 10.0, 1.0 / 365.25))
+
+        try:
+            base = american_option_price_lr(S, K, T, r, sigma, option_type, q, steps=resolved_steps)
+            up = american_option_price_lr(S + dS, K, T, r, sigma, option_type, q, steps=resolved_steps)
+            down = american_option_price_lr(max(1e-8, S - dS), K, T, r, sigma, option_type, q, steps=resolved_steps)
+            vega_up = american_option_price_lr(S, K, T, r, sigma + d_sigma, option_type, q, steps=resolved_steps)
+            vega_down = american_option_price_lr(S, K, T, r, max(1e-6, sigma - d_sigma), option_type, q, steps=resolved_steps)
+            shorter = american_option_price_lr(S, K, max(1e-6, T - dT), r, sigma, option_type, q, steps=resolved_steps)
+        except Exception:
+            deltas[i] = gammas[i] = thetas[i] = vegas[i] = math.nan
+            continue
+
+        if any(not math.isfinite(v) for v in (base, up, down, vega_up, vega_down, shorter)):
+            deltas[i] = gammas[i] = thetas[i] = vegas[i] = math.nan
+            continue
+
+        deltas[i] = (up - down) / (2.0 * dS)
+        gammas[i] = (up - 2.0 * base + down) / (dS ** 2)
+        thetas[i] = (shorter - base) / dT
+        vegas[i] = (vega_up - vega_down) / (2.0 * d_sigma)
+
+    return deltas, gammas, thetas, vegas
 
 
 # ---------------------------------------------------------------------------

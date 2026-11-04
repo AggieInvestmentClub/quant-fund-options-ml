@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
 UPDATER_ROOT = Path(
@@ -28,7 +29,7 @@ import flatfile_iv
 from constituency import active_symbols_on_date, load_constituency_snapshots
 from config import DATA_DIR
 from dataset_paths import CONSTITUENCY_ROOT, DEFAULT_STRIKE_CONTRACT_ROOT
-from utils import american_option_price_lr
+from utils import american_option_price_lr, batch_regular_greeks
 american_option_price_crr = american_option_price_lr  # backward-compatible alias
 
 OUTPUT_ROOT = DEFAULT_STRIKE_CONTRACT_ROOT
@@ -144,12 +145,12 @@ def compute_row_regular_greeks_task(task: GreekTask) -> dict:
     dT = min(1.0 / 365.25, max(T / 10.0, 1.0 / 365.25))
 
     try:
-        base = american_option_price_crr(S, K, T, r, sigma, option_type, q)
-        up = american_option_price_crr(S + dS, K, T, r, sigma, option_type, q)
-        down = american_option_price_crr(max(1e-8, S - dS), K, T, r, sigma, option_type, q)
-        vega_up = american_option_price_crr(S, K, T, r, sigma + d_sigma, option_type, q)
-        vega_down = american_option_price_crr(S, K, T, r, max(1e-6, sigma - d_sigma), option_type, q)
-        shorter = american_option_price_crr(S, K, max(1e-6, T - dT), r, sigma, option_type, q)
+        base = american_option_price_lr(S, K, T, r, sigma, option_type, q)
+        up = american_option_price_lr(S + dS, K, T, r, sigma, option_type, q)
+        down = american_option_price_lr(max(1e-8, S - dS), K, T, r, sigma, option_type, q)
+        vega_up = american_option_price_lr(S, K, T, r, sigma + d_sigma, option_type, q)
+        vega_down = american_option_price_lr(S, K, T, r, max(1e-6, sigma - d_sigma), option_type, q)
+        shorter = american_option_price_lr(S, K, max(1e-6, T - dT), r, sigma, option_type, q)
     except Exception:
         return {"delta": None, "gamma": None, "theta": None, "vega": None}
 
@@ -272,29 +273,25 @@ def add_regular_greeks(df: pd.DataFrame, row_workers: int, trade_date: date) -> 
             enriched[col] = pd.Series(dtype=float)
         return enriched
 
-    greek_tasks: List[GreekTask] = list(
-        zip(
-            enriched["implied_volatility"].where(pd.notna(enriched["implied_volatility"]), None).tolist(),
-            enriched["underlying_close"].where(pd.notna(enriched["underlying_close"]), None).tolist(),
-            enriched["strike"].where(pd.notna(enriched["strike"]), None).tolist(),
-            enriched["time_to_expiry_years"].where(pd.notna(enriched["time_to_expiry_years"]), None).tolist(),
-            enriched["risk_free_rate"].where(pd.notna(enriched["risk_free_rate"]), None).tolist(),
-            enriched[flatfile_iv.DIVIDEND_YIELD_FIELD].where(pd.notna(enriched[flatfile_iv.DIVIDEND_YIELD_FIELD]), None).tolist(),
-            enriched["option_type"].tolist(),
-        )
+    spots = pd.to_numeric(enriched["underlying_close"], errors="coerce").to_numpy(dtype=np.float64)
+    strikes = pd.to_numeric(enriched["strike"], errors="coerce").to_numpy(dtype=np.float64)
+    times = pd.to_numeric(enriched["time_to_expiry_years"], errors="coerce").to_numpy(dtype=np.float64)
+    rates = pd.to_numeric(enriched["risk_free_rate"], errors="coerce").to_numpy(dtype=np.float64)
+    sigmas = pd.to_numeric(enriched["implied_volatility"], errors="coerce").to_numpy(dtype=np.float64)
+    div_series = pd.to_numeric(enriched[flatfile_iv.DIVIDEND_YIELD_FIELD], errors="coerce").fillna(0.0).clip(lower=0.0)
+    divs = div_series.to_numpy(dtype=np.float64)
+
+    opt_types = enriched["option_type"].astype(str).str.lower()
+    is_calls = np.where(opt_types == "call", 1, np.where(opt_types == "put", 0, -1)).astype(np.int8)
+
+    deltas, gammas, thetas, vegas = batch_regular_greeks(
+        spots, strikes, times, rates, sigmas, divs, is_calls
     )
-    greek_values = flatfile_iv.run_batched_tasks(
-        greek_tasks,
-        row_workers,
-        5000,
-        "regular Greeks",
-        trade_date,
-        compute_row_regular_greeks_task,
-    )
-    enriched["delta"] = [res["delta"] for res in greek_values]
-    enriched["gamma"] = [res["gamma"] for res in greek_values]
-    enriched["theta"] = [res["theta"] for res in greek_values]
-    enriched["vega"] = [res["vega"] for res in greek_values]
+
+    enriched["delta"] = deltas
+    enriched["gamma"] = gammas
+    enriched["theta"] = thetas
+    enriched["vega"] = vegas
     return enriched
 
 
