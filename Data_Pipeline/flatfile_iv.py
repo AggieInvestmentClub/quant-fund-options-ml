@@ -1,6 +1,7 @@
 import argparse
 import concurrent.futures
 import grp
+import io
 import math
 import multiprocessing as mp
 import os
@@ -8,6 +9,7 @@ import pwd
 import re
 import shutil
 import sys
+import zlib
 from concurrent.futures.process import BrokenProcessPool
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -17,6 +19,13 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(__file__))
+
+try:
+    import _lr_native
+    _HAS_NATIVE_OPRA_STREAM = hasattr(_lr_native, "stream_filter_opra_file")
+except ImportError:
+    _lr_native = None
+    _HAS_NATIVE_OPRA_STREAM = False
 
 from config import DATA_DIR
 from interest_rate_getter import SERIES_ID as FRED_RISK_FREE_SERIES_ID
@@ -378,6 +387,124 @@ def prefilter_raw_opra_frame(
     df = df[expiry_slice.between(min_exp_str, max_exp_str)]
 
     return df.copy()
+
+
+def stream_filter_opra_gzip(
+    path: Path,
+    target_underlyings: Optional[set[str]],
+    trade_date: Optional[date] = None,
+    min_dte: int = DTE_MIN_DAYS,
+    max_dte: int = DTE_MAX_DAYS,
+) -> bytes:
+    """Stream and filter raw OPRA gzip file at the byte level before CSV parsing."""
+    min_exp_str = ""
+    max_exp_str = ""
+    if trade_date is not None:
+        t_date = pd.Timestamp(trade_date)
+        min_exp_str = (t_date + timedelta(days=min_dte)).strftime("%y%m%d")
+        max_exp_str = (t_date + timedelta(days=max_dte)).strftime("%y%m%d")
+
+    backend = os.environ.get("OPTIONS_LR_BACKEND", os.environ.get("OPTIONS_CRR_BACKEND", "auto")).strip().lower()
+    if backend != "python" and _HAS_NATIVE_OPRA_STREAM and _lr_native is not None:
+        try:
+            symbols_arg = list(target_underlyings) if target_underlyings is not None else None
+            return _lr_native.stream_filter_opra_file(
+                str(path), symbols_arg, min_exp_str or None, max_exp_str or None
+            )
+        except Exception:
+            pass
+
+    # Pure Python chunked zlib streaming fallback
+    decompressor = zlib.decompressobj(32 + zlib.MAX_WBITS)
+    matched_lines = []
+    remainder = b""
+    header_saved = False
+
+    single_prefix = None
+    target_prefixes = None
+    sym_set = None
+
+    if target_underlyings is not None:
+        if not target_underlyings:
+            return b""
+        if len(target_underlyings) == 1:
+            sym = next(iter(target_underlyings))
+            single_prefix = f"O:{sym}".encode("ascii")
+        elif len(target_underlyings) <= 16:
+            target_prefixes = tuple(f"O:{sym}".encode("ascii") for sym in target_underlyings)
+        else:
+            sym_set = {sym.encode("ascii") for sym in target_underlyings}
+
+    min_exp_bytes = min_exp_str.encode("ascii") if min_exp_str else b""
+    max_exp_bytes = max_exp_str.encode("ascii") if max_exp_str else b""
+    has_dte = bool(min_exp_bytes and max_exp_bytes)
+
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(256 * 1024)
+            if not chunk:
+                break
+            decompressed = decompressor.decompress(chunk)
+            if not decompressed:
+                continue
+            data = remainder + decompressed
+            lines = data.split(b"\n")
+            remainder = lines.pop()
+
+            start_idx = 0
+            if not header_saved and lines:
+                matched_lines.append(lines[0] + b"\n")
+                header_saved = True
+                start_idx = 1
+
+            for i in range(start_idx, len(lines)):
+                line = lines[i]
+                if single_prefix is not None:
+                    if line.startswith(single_prefix):
+                        exp = line[len(single_prefix):len(single_prefix) + 6]
+                        if not has_dte or (min_exp_bytes <= exp <= max_exp_bytes):
+                            matched_lines.append(line + b"\n")
+                elif target_prefixes is not None:
+                    if line.startswith(target_prefixes):
+                        comma_idx = line.find(b",")
+                        if comma_idx >= 17:
+                            exp = line[comma_idx - 15:comma_idx - 9]
+                            if not has_dte or (min_exp_bytes <= exp <= max_exp_bytes):
+                                matched_lines.append(line + b"\n")
+                else:
+                    if line.startswith(b"O:"):
+                        comma_idx = line.find(b",")
+                        if comma_idx >= 17:
+                            exp = line[comma_idx - 15:comma_idx - 9]
+                            if not has_dte or (min_exp_bytes <= exp <= max_exp_bytes):
+                                if sym_set is not None:
+                                    sym = line[2:comma_idx - 15]
+                                    if sym in sym_set:
+                                        matched_lines.append(line + b"\n")
+                                else:
+                                    matched_lines.append(line + b"\n")
+
+    if remainder:
+        if single_prefix is not None and remainder.startswith(single_prefix):
+            exp = remainder[len(single_prefix):len(single_prefix) + 6]
+            if not has_dte or (min_exp_bytes <= exp <= max_exp_bytes):
+                matched_lines.append(remainder + b"\n")
+
+    return b"".join(matched_lines)
+
+
+def read_prefiltered_opra_frame(
+    path: Path,
+    target_underlyings: Optional[set[str]],
+    trade_date: Optional[date] = None,
+    min_dte: int = DTE_MIN_DAYS,
+    max_dte: int = DTE_MAX_DAYS,
+) -> pd.DataFrame:
+    """Read an OPRA flat file directly into a pre-filtered DataFrame using streaming decompression."""
+    raw_bytes = stream_filter_opra_gzip(path, target_underlyings, trade_date, min_dte, max_dte)
+    if not raw_bytes or raw_bytes.strip() == b"":
+        return pd.DataFrame()
+    return pd.read_csv(io.BytesIO(raw_bytes))
 
 # AGENTS: Mission-critical universe guard; filters malformed or unsupported underlying symbols.
 def is_supported_underlying(symbol: str) -> bool:
@@ -836,13 +963,8 @@ def process_file(
 
     print(f"  processing {rel_path}")
 
-    df = pd.read_csv(path, compression="gzip")
-    if df.empty:
-        write_output_csv_atomic(df, output_path)
-        return output_path, pd.DataFrame(), close_cache_updates
-
     target_underlyings = resolve_target_underlyings(allowed_underlyings, testing, test_stock)
-    df = prefilter_raw_opra_frame(df, target_underlyings, trade_date)
+    df = read_prefiltered_opra_frame(path, target_underlyings, trade_date)
     if df.empty:
         write_output_csv_atomic(df, output_path)
         return output_path, pd.DataFrame(), close_cache_updates

@@ -455,14 +455,8 @@ def process_file(
 
     print(f"  processing {rel_path}")
 
-    df = pd.read_csv(path, compression="gzip")
-    if df.empty:
-        combined = merge_existing_and_new_rows(existing, df)
-        flatfile_iv.write_output_csv_atomic(combined, output_path)
-        return output_path, combined[feature_columns()].copy() if not combined.empty else pd.DataFrame(), close_cache_updates
-
     target_underlyings = flatfile_iv.resolve_target_underlyings(allowed_underlyings, testing, test_stock)
-    df = flatfile_iv.prefilter_raw_opra_frame(df, target_underlyings, trade_date)
+    df = flatfile_iv.read_prefiltered_opra_frame(path, target_underlyings, trade_date)
     if df.empty:
         combined = merge_existing_and_new_rows(existing, df)
         flatfile_iv.write_output_csv_atomic(combined, output_path)

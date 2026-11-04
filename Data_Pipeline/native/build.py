@@ -28,7 +28,7 @@ def main() -> None:
     compiler = shlex.split(os.environ.get("CXX", "c++"))
     command = [
         *compiler, "-O3", "-std=c++17", "-fPIC", "-ffp-contract=off",
-        f"-I{include_dir}", str(source),
+        f"-I{include_dir}", str(source), "-lz",
     ]
     if sys.platform == "darwin":
         command += ["-bundle", "-undefined", "dynamic_lookup"]

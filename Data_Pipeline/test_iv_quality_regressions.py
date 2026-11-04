@@ -1,4 +1,5 @@
 import math
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -433,5 +434,59 @@ def test_prefilter_raw_opra_frame() -> None:
     # 4. Empty and edge cases
     assert flatfile_iv.prefilter_raw_opra_frame(pd.DataFrame(), {"AAPL"}, trade_date).empty
     assert flatfile_iv.prefilter_raw_opra_frame(df, set(), trade_date).empty
+
+
+def test_streaming_opra_filter_parity(tmp_path) -> None:
+    import gzip
+    trade_date = date(2026, 4, 21)
+    csv_content = (
+        "ticker,volume,open,close,high,low,window_start,transactions\n"
+        "O:AAPL260525C00150000,10,5.0,5.0,5.0,5.0,1775016000000000000,1\n"
+        "O:AAPL260425C00150000,20,4.0,4.0,4.0,4.0,1775016000000000000,2\n"
+        "O:AAPL261016C00150000,30,3.0,3.0,3.0,3.0,1775016000000000000,3\n"
+        "O:MSFT260525C00400000,40,2.0,2.0,2.0,2.0,1775016000000000000,4\n"
+        "O:NVDA260525P00500000,50,1.0,1.0,1.0,1.0,1775016000000000000,5\n"
+        "malformed_line,0,0,0,0,0,0,0\n"
+    )
+    gz_file = tmp_path / "test_opra.csv.gz"
+    with gzip.open(gz_file, "wt", encoding="utf-8") as f:
+        f.write(csv_content)
+
+    # 1. Native / Auto path
+    df_stream = flatfile_iv.read_prefiltered_opra_frame(gz_file, {"AAPL"}, trade_date)
+    assert len(df_stream) == 1
+    assert df_stream.iloc[0]["ticker"] == "O:AAPL260525C00150000"
+    assert df_stream.iloc[0]["volume"] == 10
+
+    # 2. Multi-symbol
+    df_multi = flatfile_iv.read_prefiltered_opra_frame(gz_file, {"AAPL", "MSFT"}, trade_date)
+    assert len(df_multi) == 2
+    assert set(df_multi["ticker"]) == {"O:AAPL260525C00150000", "O:MSFT260525C00400000"}
+
+    # 3. All symbols (None)
+    df_all = flatfile_iv.read_prefiltered_opra_frame(gz_file, None, trade_date)
+    assert len(df_all) == 3
+    assert set(df_all["ticker"]) == {
+        "O:AAPL260525C00150000",
+        "O:MSFT260525C00400000",
+        "O:NVDA260525P00500000",
+    }
+
+    # 4. Empty target set
+    df_empty = flatfile_iv.read_prefiltered_opra_frame(gz_file, set(), trade_date)
+    assert df_empty.empty
+
+    # 5. Pure Python fallback forced via environment variable
+    old_backend = os.environ.get("OPTIONS_LR_BACKEND")
+    try:
+        os.environ["OPTIONS_LR_BACKEND"] = "python"
+        df_py = flatfile_iv.read_prefiltered_opra_frame(gz_file, {"AAPL"}, trade_date)
+        pd.testing.assert_frame_equal(df_stream, df_py)
+    finally:
+        if old_backend is not None:
+            os.environ["OPTIONS_LR_BACKEND"] = old_backend
+        else:
+            os.environ.pop("OPTIONS_LR_BACKEND", None)
+
 
 
