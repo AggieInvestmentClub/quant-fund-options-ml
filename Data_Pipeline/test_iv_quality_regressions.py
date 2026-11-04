@@ -331,3 +331,61 @@ def test_regular_greeks_source_iv_coverage_rejects_legacy_narrow_window(tmp_path
 
     assert flatfile_regular_greeks.source_iv_output_covers_target(iv_csv) is False
     assert flatfile_regular_greeks.existing_regular_output_covers_target(iv_csv) is False
+
+
+def test_regular_greeks_source_iv_coverage_accepts_monthly_expiration_gap(tmp_path: Path) -> None:
+    iv_csv = tmp_path / "monthly_gap_atm_iv.csv"
+    df = pd.DataFrame(
+        {
+            "trade_date": ["2026-04-15", "2026-04-15"],
+            "ticker": ["O:AAPL260515C00210000", "O:AAPL260619P00210000"],
+            "underlying": ["AAPL", "AAPL"],
+            "expiration_date": ["2026-05-15", "2026-06-19"],
+            "option_type": ["call", "put"],
+            "strike": [210.0, 210.0],
+            "close": [62.85, 5.0],
+            "underlying_close": [266.17, 266.17],
+            "dte_days": [30, 64],
+            "time_to_expiry_years": [30 / 365.25, 64 / 365.25],
+            "risk_free_rate": [0.0369, 0.0369],
+            "dividend_yield": [0.0039, 0.0039],
+            "implied_volatility": [0.90, 0.25],
+            "volume": [10, 10],
+            "transactions": [1, 1],
+        }
+    )
+    df.to_csv(iv_csv, index=False)
+    assert flatfile_regular_greeks.source_iv_output_covers_target(iv_csv) is True
+
+    for col in flatfile_regular_greeks.REGULAR_GREEK_COLS:
+        df[col] = 0.5
+    reg_csv = tmp_path / "regular_output.csv"
+    df.to_csv(reg_csv, index=False)
+    assert flatfile_regular_greeks.existing_regular_output_covers_target(reg_csv) is True
+
+
+def test_regular_greeks_source_iv_coverage_rejects_truncated_far_window(tmp_path: Path) -> None:
+    iv_csv = tmp_path / "truncated_far_atm_iv.csv"
+    df = pd.DataFrame(
+        {
+            "trade_date": ["2026-04-15", "2026-04-15"],
+            "ticker": ["O:AAPL260515C00210000", "O:AAPL260530P00210000"],
+            "underlying": ["AAPL", "AAPL"],
+            "expiration_date": ["2026-05-15", "2026-05-30"],
+            "option_type": ["call", "put"],
+            "strike": [210.0, 210.0],
+            "close": [62.85, 5.0],
+            "underlying_close": [266.17, 266.17],
+            "dte_days": [30, 45],
+            "time_to_expiry_years": [30 / 365.25, 45 / 365.25],
+            "risk_free_rate": [0.0369, 0.0369],
+            "dividend_yield": [0.0039, 0.0039],
+            "implied_volatility": [0.90, 0.25],
+            "volume": [10, 10],
+            "transactions": [1, 1],
+        }
+    )
+    df.to_csv(iv_csv, index=False)
+    assert flatfile_regular_greeks.source_iv_output_covers_target(iv_csv) is False
+    assert flatfile_regular_greeks.existing_regular_output_covers_target(iv_csv) is False
+

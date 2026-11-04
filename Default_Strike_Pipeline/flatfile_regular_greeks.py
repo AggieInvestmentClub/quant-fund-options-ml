@@ -50,6 +50,11 @@ GreekTask = Tuple[
 REGULAR_GREEK_COLS = ["delta", "gamma", "theta", "vega"]
 LEGACY_DTE_MIN_DAYS = 30
 LEGACY_DTE_MAX_DAYS = 90
+# Expiration cycle tolerances:
+# Weekly options exist near DTE_MIN_DAYS (7-day maximum cycle spacing).
+# Far-dated options near DTE_MAX_DAYS are monthly (up to 35-day cycle spacing between 3rd Fridays).
+DTE_MIN_SLACK_DAYS = 7
+DTE_MAX_SLACK_DAYS = 35
 _STOCK_CACHE: flatfile_iv.StockHistoryCache = {}
 REGULAR_FEATURE_MAP = {
     "avg_call_iv": "implied_volatility_call",
@@ -188,8 +193,8 @@ def existing_regular_output_covers_target(output_path: Path) -> bool:
     if bounds is None:
         return True
     min_dte, max_dte = bounds
-    min_target = flatfile_iv.DTE_MIN_DAYS + 7
-    max_target = flatfile_iv.DTE_MAX_DAYS - 7
+    min_target = flatfile_iv.DTE_MIN_DAYS + DTE_MIN_SLACK_DAYS
+    max_target = flatfile_iv.DTE_MAX_DAYS - DTE_MAX_SLACK_DAYS
     return min_dte <= min_target and max_dte >= max_target
 
 
@@ -228,8 +233,8 @@ def source_iv_output_covers_target(source_iv_path: Path) -> bool:
     if bounds is None:
         return True
     min_dte, max_dte = bounds
-    min_target = flatfile_iv.DTE_MIN_DAYS + 7
-    max_target = flatfile_iv.DTE_MAX_DAYS - 7
+    min_target = flatfile_iv.DTE_MIN_DAYS + DTE_MIN_SLACK_DAYS
+    max_target = flatfile_iv.DTE_MAX_DAYS - DTE_MAX_SLACK_DAYS
     return min_dte <= min_target and max_dte >= max_target
 
 
