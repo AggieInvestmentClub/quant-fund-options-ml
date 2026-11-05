@@ -489,6 +489,47 @@ def test_streaming_opra_filter_parity(tmp_path) -> None:
             os.environ.pop("OPTIONS_LR_BACKEND", None)
 
 
+def test_libdeflate_prefix_isolation_and_parity(tmp_path) -> None:
+    """Ensure fast libdeflate ingestion cleanly isolates symbols with overlapping prefixes."""
+    import gzip
+    trade_date = date(2026, 4, 21)
+    csv_content = (
+        "ticker,volume,open,close,high,low,window_start,transactions\n"
+        "O:SPY260525C00400000,10,5.0,5.0,5.0,5.0,1775016000000000000,1\n"
+        "O:SPYG260525C00115000,20,4.0,4.0,4.0,4.0,1775016000000000000,2\n"
+        "O:SPYM260525P00073000,30,3.0,3.0,3.0,3.0,1775016000000000000,3\n"
+        "O:AAPL260525C00150000,40,2.0,2.0,2.0,2.0,1775016000000000000,4\n"
+        "O:AAPLE260525C00150000,50,1.0,1.0,1.0,1.0,1775016000000000000,5\n"
+    )
+    gz_file = tmp_path / "test_prefix.csv.gz"
+    with gzip.open(gz_file, "wt", encoding="utf-8") as f:
+        f.write(csv_content)
+
+    # Single-symbol should not match SPYG or SPYM
+    df_spy = flatfile_iv.read_prefiltered_opra_frame(gz_file, {"SPY"}, trade_date)
+    assert len(df_spy) == 1
+    assert df_spy.iloc[0]["ticker"] == "O:SPY260525C00400000"
+
+    # Multi-symbol should match AAPL and SPY but neither AAPLE nor SPYG
+    df_multi = flatfile_iv.read_prefiltered_opra_frame(gz_file, {"AAPL", "SPY"}, trade_date)
+    assert len(df_multi) == 2
+    assert set(df_multi["ticker"]) == {"O:AAPL260525C00150000", "O:SPY260525C00400000"}
+
+    # Exact byte parity with python fallback
+    old_backend = os.environ.get("OPTIONS_LR_BACKEND")
+    try:
+        os.environ["OPTIONS_LR_BACKEND"] = "native"
+        bytes_native = flatfile_iv.stream_filter_opra_gzip(gz_file, {"AAPL", "SPY"}, trade_date)
+        os.environ["OPTIONS_LR_BACKEND"] = "python"
+        bytes_py = flatfile_iv.stream_filter_opra_gzip(gz_file, {"AAPL", "SPY"}, trade_date)
+        assert bytes_native == bytes_py
+    finally:
+        if old_backend is not None:
+            os.environ["OPTIONS_LR_BACKEND"] = old_backend
+        else:
+            os.environ.pop("OPTIONS_LR_BACKEND", None)
+
+
 def test_batch_regular_greeks_parity() -> None:
     from flatfile_regular_greeks import compute_row_regular_greeks_task, add_regular_greeks
 

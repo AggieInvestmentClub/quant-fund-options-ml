@@ -430,10 +430,10 @@ def stream_filter_opra_gzip(
         if len(target_underlyings) == 1:
             sym = next(iter(target_underlyings))
             single_prefix = f"O:{sym}".encode("ascii")
-        elif len(target_underlyings) <= 16:
-            target_prefixes = tuple(f"O:{sym}".encode("ascii") for sym in target_underlyings)
         else:
             sym_set = {sym.encode("ascii") for sym in target_underlyings}
+            if len(target_underlyings) <= 16:
+                target_prefixes = tuple(f"O:{sym}".encode("ascii") for sym in target_underlyings)
 
     min_exp_bytes = min_exp_str.encode("ascii") if min_exp_str else b""
     max_exp_bytes = max_exp_str.encode("ascii") if max_exp_str else b""
@@ -468,9 +468,11 @@ def stream_filter_opra_gzip(
                     if line.startswith(target_prefixes):
                         comma_idx = line.find(b",")
                         if comma_idx >= 17:
-                            exp = line[comma_idx - 15:comma_idx - 9]
-                            if not has_dte or (min_exp_bytes <= exp <= max_exp_bytes):
-                                matched_lines.append(line + b"\n")
+                            sym = line[2:comma_idx - 15]
+                            if sym in sym_set:
+                                exp = line[comma_idx - 15:comma_idx - 9]
+                                if not has_dte or (min_exp_bytes <= exp <= max_exp_bytes):
+                                    matched_lines.append(line + b"\n")
                 else:
                     if line.startswith(b"O:"):
                         comma_idx = line.find(b",")

@@ -22,3 +22,7 @@ raw stocks archive/
 
 # Local cron logs
 logs/
+
+# Build artifacts
+Data_Pipeline/native/libdeflate/build/
+*.a
