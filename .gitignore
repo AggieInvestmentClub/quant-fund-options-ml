@@ -2,6 +2,7 @@
 *.log
 *.pyc
 __pycache__/
+Data_Pipeline/_crr_native*.so
 .venv/
 .venv_root_empty/
 

@@ -1,12 +1,13 @@
-# Options calculator: parallel computing work
+# Options calculator and research pipeline
 
 This repository is the working copy of the options data calculator from
 [`AggieInvestmentClub/options_updater`](https://github.com/AggieInvestmentClub/options_updater/tree/834e57563b0d10eb82edc491fe31a2c1e7a92b0a)
 at source commit `834e57563b0d10eb82edc491fe31a2c1e7a92b0a`. The immediate goal is to
 make its CPU-heavy implied-volatility (IV) and Greek calculations faster while
-preserving the results. Modeling the relationship between option data and future
-underlying-stock returns is a later project phase. There is no neural network or
-training pipeline here yet.
+preserving the results. A separate [options research pipeline](Research_Pipeline/README.md)
+now builds dated model examples, predictions, a monthly backtest, and Monte Carlo
+checks. It has only been exercised with synthetic data so far; no real-data
+investment result is claimed.
 
 ## What was imported
 
@@ -132,11 +133,11 @@ including `flock` and `date --iso-8601`.
   unacceptable rise in peak memory. Report the full worker-count curve;
   parallel overhead may make small files slower.
 
-## Later research phase
+## Research phase
 
-After the calculator is fast and validated, build a dated options-feature
-dataset and study whether option signals **predict** subsequent underlying
-returns or volatility. Define the target horizon, stock universe, timestamp
-rules, and train/validation/test periods before choosing neural networks or
-other models. Use time-based evaluation and leakage checks. Predictive results
-alone would not establish that option prices *cause* underlying prices to move.
+The [research pipeline](Research_Pipeline/README.md) accepts a dated Parquet
+handoff from the calculator and stock-data providers. It implements the paper's
+12-month jump/crash labels, chronological model fitting, monthly long/short
+portfolio, and Monte Carlo checks. The real-data handoff and paper-style
+validation are still pending. Predictive results alone would not establish that
+option prices *cause* underlying prices to move.
