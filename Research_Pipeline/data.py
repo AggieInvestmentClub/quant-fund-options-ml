@@ -164,7 +164,9 @@ def build_monthly_panel(
     controls = tables["stock_controls"].copy()
     members = tables["sp500_membership"].copy()
     prices["period"] = prices.trade_date.dt.to_period("M")
-    ends = prices.groupby("period").trade_date.max().sort_index()
+    all_periods = set(prices.period.unique())
+    completed_periods = {period for period in all_periods if period + 1 in all_periods}
+    ends = prices[prices.period.isin(completed_periods)].groupby("period").trade_date.max().sort_index()
     rebalance_dates = {
         period: prices.loc[prices.trade_date > day, "trade_date"].min()
         for period, day in ends.items()
@@ -274,7 +276,7 @@ def build_monthly_panel(
         panel.loc[mask, "sp500_member"] = panel.loc[mask, "security_id"].isin(member_ids).to_numpy()
         panel.loc[mask, "membership_snapshot_date"] = snapshot
     panel = panel.sort_values(["trade_date", "security_id"]).reset_index(drop=True)
-    observed_periods = set(prices.period.unique())
+    observed_periods = set(ends.index)
     missing_matured_labels = int((panel.target_period.isin(observed_periods) & panel.target_adjusted_close.isna()).sum())
     coverage = {
         "option_rows": len(tables["options_features"]),

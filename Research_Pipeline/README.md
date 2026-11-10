@@ -85,8 +85,10 @@ each run; the command refuses to mix new results with old files.
 
 - A stock/date enters the panel only when its option features exist on the
   stock market's last trading day of the month and are available by the first
-  following trading close. Company controls must have been released by the
-  prediction time and have `as_of_date` no later than that month-end.
+  following trading close. The trailing price month is treated as incomplete
+  until a date from the following month exists. Company controls must have
+  been released by the prediction time and have `as_of_date` no later than
+  that month-end.
 - A 12-month adjusted-price **log return** above +0.70 is `jump`, below -0.70
   is `crash`; all other finite outcomes are `normal`. A label becomes trainable
   only after the future month-end price was available.

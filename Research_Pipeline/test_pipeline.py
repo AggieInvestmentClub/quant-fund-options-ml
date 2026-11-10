@@ -36,6 +36,7 @@ def test_month_ends_labels_and_maturity(handoff):
     assert np.allclose(labeled.forward_log_return, np.log(labeled.target_adjusted_close / labeled.adjusted_close))
     assert (labeled.label_available_at > labeled.rebalance_close_at).all()
     assert (labeled.sp500_member.notna()).all()
+    assert panel.loc[panel.period.eq(pd.Period("2016-07")), "label"].isna().all()
 
 
 def test_duplicate_contract_day_key_is_rejected(handoff):
