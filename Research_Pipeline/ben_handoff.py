@@ -21,7 +21,8 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _stock_histories(stocks_dir: Path, raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+def _stock_histories(stocks_dir: Path, raw: pd.DataFrame,
+                     adjusted_column: str) -> tuple[pd.DataFrame, dict]:
     files = sorted(Path(stocks_dir).glob("*.csv"))
     if not files:
         raise ValueError(f"no stock history CSVs in {stocks_dir}")
@@ -53,13 +54,13 @@ def _stock_histories(stocks_dir: Path, raw: pd.DataFrame) -> tuple[pd.DataFrame,
     prices = pd.concat(pieces, ignore_index=True)
     if prices.duplicated(["trade_date", "ticker"]).any():
         raise ValueError("duplicate stock/date across stock history CSVs")
-    wide_prices = raw[["trade_date", "underlying", "stock_close", "adj_close", "market_cap"]].rename(
-        columns={"underlying": "ticker"}
+    wide_prices = raw[["trade_date", "underlying", "stock_close", adjusted_column, "market_cap"]].rename(
+        columns={"underlying": "ticker", adjusted_column: "wide_adjusted_close"}
     )
     overlap = prices.merge(wide_prices, on=["trade_date", "ticker"], how="inner", validate="one_to_one")
     close_mismatch = (~np.isclose(overlap.close, overlap.stock_close, rtol=1e-5, atol=1e-4,
                                 equal_nan=True)).sum()
-    adjusted_mismatch = (~np.isclose(overlap.adjusted_close, overlap.adj_close,
+    adjusted_mismatch = (~np.isclose(overlap.adjusted_close, overlap.wide_adjusted_close,
                                    rtol=1e-5, atol=1e-4, equal_nan=True)).sum()
     prices = prices.merge(wide_prices[["trade_date", "ticker", "market_cap"]],
                           on=["trade_date", "ticker"], how="left", validate="one_to_one")
@@ -91,8 +92,9 @@ def convert_ben_file(
     raw = pd.read_parquet(source)
     if raw.empty:
         raise ValueError("wide feature file is empty")
+    adjusted_column = "stock_adj_close" if "stock_adj_close" in raw else "adj_close"
     needed = {"trade_date", "underlying", "tradable_date", *PAPER_OPTIONS,
-              "stock_close", "adj_close", "market_cap"}
+              "stock_close", adjusted_column, "market_cap"}
     absent = needed - set(raw)
     if absent:
         raise ValueError(f"wide feature file missing {sorted(absent)}")
@@ -130,17 +132,17 @@ def convert_ben_file(
     if "is_sp500" in raw:
         options["observed_is_sp500"] = raw.is_sp500.astype("boolean")
     if stocks_dir is None:
-        prices = raw[["trade_date", "underlying", "stock_close", "adj_close",
+        prices = raw[["trade_date", "underlying", "stock_close", adjusted_column,
                       volume_col, "market_cap"]].copy()
         prices = prices.rename(columns={"underlying": "ticker", "stock_close": "close",
-                                        "adj_close": "adjusted_close", volume_col: "volume"})
+                                        adjusted_column: "adjusted_close", volume_col: "volume"})
         for col in ("close", "adjusted_close", "volume", "market_cap"):
             prices[col] = pd.to_numeric(prices[col], errors="coerce")
         price_missing = int(prices[["close", "adjusted_close", "volume", "market_cap"]].isna().any(axis=1).sum())
         prices = prices.dropna(subset=["close", "adjusted_close", "volume", "market_cap"]).copy()
         stock_report = {"stock_price_source": "wide_file_only"}
     else:
-        prices, stock_report = _stock_histories(stocks_dir, raw)
+        prices, stock_report = _stock_histories(stocks_dir, raw, adjusted_column)
         stock_report["stock_price_source"] = "dated_stock_history_csvs"
         price_missing = int(prices[["close", "adjusted_close", "volume"]].isna().any(axis=1).sum())
     close_lookup = {day: market_close_utc(day) for day in prices.trade_date.unique()}

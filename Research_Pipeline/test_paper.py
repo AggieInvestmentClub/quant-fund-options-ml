@@ -113,7 +113,7 @@ def test_wide_adapter_flags_proxies_and_conservative_availability(tmp_path):
     for day, next_day in (("2024-04-30", "2024-05-01"), ("2024-05-01", "2024-05-02")):
         for ticker in ("AAA", "BBB"):
             item = {"trade_date": day, "tradable_date": next_day, "underlying": ticker,
-                    "stock_close": 10.0, "adj_close": 10.0, "stock_volume": 1000,
+                    "stock_close": 10.0, "stock_adj_close": 10.0, "stock_volume": 1000,
                     "market_cap": 1e6, "is_sp500": True,
                     "options_available_time": f"{next_day}T07:15:00Z"}
             item.update({name: 0.2 for name in PAPER_OPTIONS})
@@ -173,3 +173,18 @@ def test_calculator_reconciliation_catches_one_changed_value(tmp_path):
     report = reconcile_features(wide, features, month="2024-04")
     assert not report["all_match"]
     assert report["features"]["avg_put_iv"]["value_mismatches"] == 1
+
+
+def test_reconciliation_distinguishes_float32_storage_rounding(tmp_path):
+    row = {"trade_date": "2024-04-30", "underlying": "AAA"}
+    row.update({name: np.float32(1000.0001) for name in PAPER_OPTIONS})
+    wide = tmp_path / "wide.parquet"
+    pd.DataFrame([row]).to_parquet(wide, index=False)
+    features = tmp_path / "features"
+    features.mkdir()
+    for name in PAPER_OPTIONS:
+        pd.DataFrame([{"trade_date": "2024-04-30", "underlying": "AAA",
+                       name: 1000.0001}]).to_csv(features / f"{name}.csv", index=False)
+    result = reconcile_features(wide, features, month="2024-04")
+    assert not result["all_match"]
+    assert result["all_float32_roundtrip_match"]

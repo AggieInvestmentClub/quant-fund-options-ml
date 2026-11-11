@@ -35,7 +35,8 @@ def reconcile_features(wide_file: Path, features_dir: Path, *, month: str,
     if wide.empty:
         raise ValueError(f"wide file has no rows for {period}")
     report = {"month": str(period), "wide_rows": len(wide), "tolerance": tolerance,
-              "features": {}, "all_match": True}
+              "features": {}, "all_match": True,
+              "all_float32_roundtrip_match": True}
     for feature in PAPER_OPTIONS:
         source = Path(features_dir) / f"{feature}.csv"
         if not source.is_file():
@@ -51,6 +52,8 @@ def reconcile_features(wide_file: Path, features_dir: Path, *, month: str,
         a = pd.to_numeric(both[f"{feature}_wide"], errors="coerce").to_numpy(dtype=float)
         b = pd.to_numeric(both[f"{feature}_calculator"], errors="coerce").to_numpy(dtype=float)
         equal = np.isclose(a, b, rtol=0, atol=tolerance, equal_nan=True)
+        quantized_equal = np.isclose(a, b.astype(np.float32).astype(float),
+                                     rtol=0, atol=0, equal_nan=True)
         finite = np.isfinite(a) & np.isfinite(b)
         gap = np.abs(a[finite] - b[finite])
         row = {
@@ -58,11 +61,18 @@ def reconcile_features(wide_file: Path, features_dir: Path, *, month: str,
             "only_wide": int(joined._merge.eq("left_only").sum()),
             "only_calculator": int(joined._merge.eq("right_only").sum()),
             "value_mismatches": int((~equal).sum()),
+            "float32_roundtrip_mismatches": int((~quantized_equal).sum()),
             "max_finite_absolute_difference": float(gap.max()) if len(gap) else None,
         }
         row["matches"] = row["only_wide"] == row["only_calculator"] == row["value_mismatches"] == 0
+        row["float32_roundtrip_matches"] = (
+            row["only_wide"] == row["only_calculator"] == row["float32_roundtrip_mismatches"] == 0
+        )
         report["features"][feature] = row
         report["all_match"] = report["all_match"] and row["matches"]
+        report["all_float32_roundtrip_match"] = (
+            report["all_float32_roundtrip_match"] and row["float32_roundtrip_matches"]
+        )
     return report
 
 

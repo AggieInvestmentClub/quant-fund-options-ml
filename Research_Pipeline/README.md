@@ -238,8 +238,10 @@ one complete month by stock/date and value before using the wide handoff:
 ```
 
 The command fails on any missing/extra stock-date key or finite difference
-above `1e-8`. A missing source feature CSV is a hard error. Preserve this
-report with the adapter report and source hashes.
+above `1e-8`. It also reports whether the wide values exactly equal the CSV
+values after a 32-bit float cast; that check explains storage rounding without
+silently relaxing the strict result. A missing source feature CSV is a hard
+error. Preserve this report with the adapter report and source hashes.
 
 As audited on 2026-11-11, this file covers April 2024 through November 2026,
 with 318,202 stock-days, 545 tickers, and 32 calendar months, the last of
