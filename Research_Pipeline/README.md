@@ -204,6 +204,20 @@ trading claim. The wide file uses last-trade option prices, not the paper's
 bid/ask midpoints. Missing stock prices are counted and excluded from the
 canonical price handoff, then coverage and backtest gates expose the impact.
 
+If the upstream calculator's ten `avg_*.csv` files are available, reconcile
+one complete month by stock/date and value before using the wide handoff:
+
+```bash
+.venv/bin/python -m Research_Pipeline.reconcile \
+  --wide-file /srv/data/options_model_features/ml_dataset_daily.parquet \
+  --features-dir /path/to/calculator/final_features \
+  --month 2026-10 --output /path/to/scratch/reconciliation.json
+```
+
+The command fails on any missing/extra stock-date key or finite difference
+above `1e-8`. A missing source feature CSV is a hard error. Preserve this
+report with the adapter report and source hashes.
+
 As audited on 2026-11-11, this file covers April 2024 through November 2026,
 with 318,202 stock-days, 545 tickers, and 32 calendar months, the last of
 which is incomplete. It is almost entirely S&P names. The file lacks the

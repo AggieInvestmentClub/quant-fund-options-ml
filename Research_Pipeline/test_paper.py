@@ -12,6 +12,7 @@ from Research_Pipeline.factors import FACTOR_COLUMNS, newey_west_alpha
 from Research_Pipeline.paper import normalize_by_month, paper_feature_sets, train_paper
 from Research_Pipeline.paper_reference import compare_table_six
 from Research_Pipeline.run import run_pipeline
+from Research_Pipeline.reconcile import reconcile_features
 from Research_Pipeline.synthetic import write_synthetic_handoff
 
 
@@ -99,3 +100,22 @@ def test_wide_adapter_flags_proxies_and_conservative_availability(tmp_path):
                          pilot_train_months=1, pilot_test_months=3, iterations=1)
     assert pilot["status"] == "blocked_data_gate"
     assert (tmp_path / "pilot" / "coverage.json").exists()
+
+
+def test_calculator_reconciliation_catches_one_changed_value(tmp_path):
+    rows = [{"trade_date": "2024-04-30", "underlying": ticker,
+             **{name: 0.2 for name in PAPER_OPTIONS}} for ticker in ("AAA", "BBB")]
+    wide = tmp_path / "wide.parquet"
+    pd.DataFrame(rows).to_parquet(wide, index=False)
+    features = tmp_path / "features"
+    features.mkdir()
+    for name in PAPER_OPTIONS:
+        pd.DataFrame(rows)[["trade_date", "underlying", name]].to_csv(features / f"{name}.csv", index=False)
+    assert reconcile_features(wide, features, month="2024-04")["all_match"]
+    path = features / "avg_put_iv.csv"
+    changed = pd.read_csv(path)
+    changed.loc[0, "avg_put_iv"] = 0.25
+    changed.to_csv(path, index=False)
+    report = reconcile_features(wide, features, month="2024-04")
+    assert not report["all_match"]
+    assert report["features"]["avg_put_iv"]["value_mismatches"] == 1
