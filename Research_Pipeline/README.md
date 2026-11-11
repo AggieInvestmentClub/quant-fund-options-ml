@@ -109,7 +109,8 @@ each run; the command refuses to mix new results with old files.
 - On the untouched test months, 2,000 probability-pair shuffles within month
   and market-cap decile form a random-signal null. Another 2,000 three-month
   moving-block resamples form 95% intervals for annualized net return and
-  Sharpe. The report also gives a conservative family-wise p-value adjustment
+  Sharpe when at least six test months are available; shorter pilots report
+  the block interval as unavailable. The report also gives a conservative family-wise p-value adjustment
   for the multiple model/feature combinations in each universe. All random
   draws use a saved seed.
 

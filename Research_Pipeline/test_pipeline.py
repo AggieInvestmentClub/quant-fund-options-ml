@@ -200,6 +200,13 @@ def test_monte_carlo_reproducible_and_preserves_monthly_scores():
     assert 0 < first["random_signal_one_sided_p"] <= 1
 
 
+def test_three_month_pilot_does_not_report_degenerate_bootstrap_interval():
+    result = monte_carlo_one(_predictions_for_backtest(), iterations=5, seed=7)
+    assert result["block_bootstrap_annualized_return_95pct"] is None
+    assert result["block_bootstrap_sharpe_95pct"] is None
+    assert result["block_bootstrap_status"].startswith("unavailable")
+
+
 def test_monte_carlo_reports_multiple_comparison_adjustment():
     base = _predictions_for_backtest()
     base["model"] = "logistic"

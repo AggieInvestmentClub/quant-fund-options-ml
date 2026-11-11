@@ -60,8 +60,12 @@ def _stock_histories(stocks_dir: Path, raw: pd.DataFrame,
     overlap = prices.merge(wide_prices, on=["trade_date", "ticker"], how="inner", validate="one_to_one")
     close_mismatch = (~np.isclose(overlap.close, overlap.stock_close, rtol=1e-5, atol=1e-4,
                                 equal_nan=True)).sum()
-    adjusted_mismatch = (~np.isclose(overlap.adjusted_close, overlap.wide_adjusted_close,
-                                   rtol=1e-5, atol=1e-4, equal_nan=True)).sum()
+    adjusted_bad = ~np.isclose(overlap.adjusted_close, overlap.wide_adjusted_close,
+                               rtol=1e-5, atol=1e-4, equal_nan=True)
+    adjusted_mismatch = int(adjusted_bad.sum())
+    mismatch_rows = overlap.loc[adjusted_bad]
+    relative_error = ((mismatch_rows.adjusted_close - mismatch_rows.wide_adjusted_close).abs()
+                      / mismatch_rows.wide_adjusted_close.abs())
     prices = prices.merge(wide_prices[["trade_date", "ticker", "market_cap"]],
                           on=["trade_date", "ticker"], how="left", validate="one_to_one")
     report = {
@@ -70,6 +74,16 @@ def _stock_histories(stocks_dir: Path, raw: pd.DataFrame,
         "overlap_stock_price_rows": len(overlap),
         "overlap_close_mismatches": int(close_mismatch),
         "overlap_adjusted_close_mismatches": int(adjusted_mismatch),
+        "overlap_adjusted_close_mismatch_first_date": (
+            str(mismatch_rows.trade_date.min().date()) if adjusted_mismatch else None
+        ),
+        "overlap_adjusted_close_mismatch_last_date": (
+            str(mismatch_rows.trade_date.max().date()) if adjusted_mismatch else None
+        ),
+        "overlap_adjusted_close_mismatch_tickers": sorted(mismatch_rows.ticker.unique().tolist()),
+        "overlap_adjusted_close_max_relative_error": (
+            float(relative_error.max()) if adjusted_mismatch else 0.0
+        ),
         "stock_history_manifest_sha256": manifest_digest.hexdigest(),
         "market_cap_missing_on_supplemental_days": int(prices.market_cap.isna().sum()),
     }

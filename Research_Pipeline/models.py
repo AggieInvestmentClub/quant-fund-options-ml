@@ -93,7 +93,7 @@ def _probs(model: Pipeline, x: pd.DataFrame) -> np.ndarray:
     result = np.zeros((len(x), 3), dtype=float)
     for position, class_id in enumerate(model.named_steps["model"].classes_):
         result[:, int(class_id)] = probabilities[:, position]
-    return result
+    return result / result.sum(axis=1, keepdims=True)
 
 
 def _training_rows(panel: pd.DataFrame, cutoff: pd.Timestamp) -> pd.DataFrame:

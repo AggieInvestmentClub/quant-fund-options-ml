@@ -120,19 +120,23 @@ def monte_carlo_one(
         null_means[index] = _mean_from_prepared(months, rng, randomize=True)
     series = observed_monthly.net_return_0pct_borrow.to_numpy(dtype=float)
     boot_annual, boot_sharpe = [], []
-    for _ in range(iterations):
-        sampled = moving_block_sample(series, rng)
-        measures = portfolio_metrics(pd.DataFrame({"net_return_0pct_borrow": sampled}))
-        if measures["annualized_return"] is not None:
-            boot_annual.append(measures["annualized_return"])
-        if measures["sharpe"] is not None:
-            boot_sharpe.append(measures["sharpe"])
+    # With one three-month block, every resample is the original series.
+    # Suppress that degenerate interval rather than presenting it as certainty.
+    if len(series) >= 6:
+        for _ in range(iterations):
+            sampled = moving_block_sample(series, rng)
+            measures = portfolio_metrics(pd.DataFrame({"net_return_0pct_borrow": sampled}))
+            if measures["annualized_return"] is not None:
+                boot_annual.append(measures["annualized_return"])
+            if measures["sharpe"] is not None:
+                boot_sharpe.append(measures["sharpe"])
     return {
         "iterations": iterations, "seed": seed, "observed": observed,
         "random_signal_one_sided_p": float((1 + np.sum(null_means >= observed_mean)) / (iterations + 1)),
         "random_signal_mean_monthly_return_95pct": np.quantile(null_means, [0.025, 0.975]).tolist(),
         "block_bootstrap_annualized_return_95pct": np.quantile(boot_annual, [0.025, 0.975]).tolist() if boot_annual else None,
         "block_bootstrap_sharpe_95pct": np.quantile(boot_sharpe, [0.025, 0.975]).tolist() if boot_sharpe else None,
+        "block_bootstrap_status": "available" if len(series) >= 6 else "unavailable: need at least two three-month blocks",
         "method": "paired probability shuffle within month and market-cap decile; three-month moving-block bootstrap",
     }
 
