@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
 
 from .backtest import attach_forward_trade_returns, backtest_all
 from .ben_handoff import convert_ben_file
@@ -41,8 +42,22 @@ def _parquet(path: Path, frame: pd.DataFrame) -> None:
     output.to_parquet(path, index=False)
 
 
+def _limit_cores(max_cores: int) -> list[int] | None:
+    if not 1 <= max_cores <= 4:
+        raise ValueError("max_cores must be between 1 and 4")
+    pa.set_cpu_count(max_cores)
+    pa.set_io_thread_count(max_cores)
+    if hasattr(os, "sched_getaffinity"):
+        allowed = sorted(os.sched_getaffinity(0))
+        chosen = allowed[:max_cores]
+        os.sched_setaffinity(0, chosen)
+        return chosen
+    return None
+
+
 def _manifest(input_dir: Path, *, seed: int, iterations: int, pilot: bool,
-              synthetic: bool, factor_file: Path | None = None) -> dict:
+              synthetic: bool, factor_file: Path | None = None,
+              max_cores: int = 4, cpu_affinity: list[int] | None = None) -> dict:
     files = sorted(input_dir.glob("*.parquet"))
     digests = {}
     for file in files:
@@ -67,6 +82,7 @@ def _manifest(input_dir: Path, *, seed: int, iterations: int, pilot: bool,
     return {
         "inputs": digests, "git_commit": commit, "seed": seed,
         "monte_carlo_iterations": iterations, "engineering_pilot": pilot,
+        "max_cpu_cores": max_cores, "cpu_affinity": cpu_affinity,
         "synthetic_input": synthetic,
         "versions": {name: importlib.metadata.version(name) for name in ("numpy", "pandas", "pyarrow", "scikit-learn", "lightgbm")},
     }
@@ -79,8 +95,10 @@ def run_pipeline(
     paper_start: str = "2006-01", paper_end: str = "2022-12",
     factor_file: Path | None = None,
     pilot_train_months: int = 12, pilot_test_months: int = 6,
+    max_cores: int = 4,
 ) -> dict:
     input_dir, output_dir = Path(input_dir), Path(output_dir)
+    cpu_affinity = _limit_cores(max_cores)
     output_dir.mkdir(parents=True, exist_ok=True)
     expected_outputs = (
         "manifest.json", "coverage.json", "monthly_panel.parquet", "model_selection.json",
@@ -104,7 +122,8 @@ def run_pipeline(
     )
     _json(output_dir / "manifest.json", _manifest(input_dir, seed=seed, iterations=iterations,
                                                   pilot=pilot, synthetic=synthetic,
-                                                  factor_file=factor_file))
+                                                  factor_file=factor_file,
+                                                  max_cores=max_cores, cpu_affinity=cpu_affinity))
     panel, coverage = build_monthly_panel(
         tables, min_snapshot_members=0 if pilot else 450,
         paper_control_lags=experiment == "paper",
@@ -242,6 +261,7 @@ def main() -> int:
     parser.add_argument("--allow-ticker-proxy", action="store_true", help="pilot only; not stable identity")
     parser.add_argument("--pilot-train-months", type=int, default=12)
     parser.add_argument("--pilot-test-months", type=int, default=6)
+    parser.add_argument("--max-cores", type=int, default=4, help="maximum 1-4 CPU cores")
     args = parser.parse_args()
     if args.synthetic_demo:
         input_dir = args.output_dir / "synthetic_input"
@@ -262,6 +282,7 @@ def main() -> int:
         paper_start=args.paper_start, paper_end=args.paper_end,
         factor_file=args.factor_file,
         pilot_train_months=args.pilot_train_months, pilot_test_months=args.pilot_test_months,
+        max_cores=args.max_cores,
     )
     print(json.dumps(result, indent=2, default=str))
     return 0 if result["status"] != "blocked_data_gate" else 2

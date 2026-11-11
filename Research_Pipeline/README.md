@@ -47,7 +47,10 @@ paper replication.
 
 Install Python 3.10+ dependencies in an isolated environment. On macOS,
 LightGBM also needs `libomp` (`brew install libomp`). Model execution uses one
-thread per numerical library and LightGBM fit.
+thread per numerical library and LightGBM fit. The runner caps Arrow's CPU and
+I/O pools at four threads and pins its process to at most four available cores
+on Linux. Use `--max-cores 1`, `2`, or `4` to lower that cap; the manifest
+records the choice and any Linux CPU affinity.
 
 ```bash
 python3 -m venv .venv

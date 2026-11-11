@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -237,6 +239,7 @@ def test_short_history_produces_coverage_and_blocked_status(handoff, tmp_path):
     result = run_pipeline(handoff, output, iterations=1)
     assert result["status"] == "blocked_data_gate"
     assert (output / "coverage.json").exists()
+    assert json.loads((output / "manifest.json").read_text())["max_cpu_cores"] == 4
     assert not (output / "portfolio_metrics.json").exists()
     with pytest.raises(FileExistsError, match="fresh output directory"):
         run_pipeline(handoff, output, iterations=1)
