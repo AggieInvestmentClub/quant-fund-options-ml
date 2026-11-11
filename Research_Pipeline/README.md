@@ -128,6 +128,12 @@ within that month. LightGBM uses its default tree parameters, a chronological
 80/20 fitting/validation split, and five rounds of early stopping. Logit uses
 all eligible training observations. The saved model report records each
 training window and the LightGBM best iteration.
+Paper mode also requires nonmissing call and put IV and a prior-month stock
+closing price of at least $1. The coverage report counts rows removed by
+these two filters. The upstream calculator must still establish the paper's
+contract-level 31–90-day maturity, positive volume/bid, valid bid/ask,
+$0.10 midpoint, no-arbitrage, and 0.01–5 IV filters. Aggregated rows cannot
+prove those rules after the fact.
 
 The paper says the January 2006 prediction was trained through December 2005,
 but the late-2005 **12-month labels were unknowable in January 2006**. Two

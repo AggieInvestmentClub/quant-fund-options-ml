@@ -156,6 +156,7 @@ def market_close_utc(day: pd.Timestamp) -> pd.Timestamp:
 def build_monthly_panel(
     tables: dict[str, pd.DataFrame], *, min_snapshot_members: int = 0,
     paper_control_lags: bool = False,
+    paper_sample_filters: bool = False,
 ) -> tuple[pd.DataFrame, dict]:
     options = tables["options_features"].copy()
     verified_common = int(options.is_us_common_stock.eq(True).fillna(False).sum())
@@ -175,6 +176,19 @@ def build_monthly_panel(
     options["period"] = options.trade_date.dt.to_period("M")
     options = options[options.trade_date.eq(options.period.map(ends))].copy()
     input_month_end_rows = len(options)
+    paper_both_sides_rows = input_month_end_rows
+    paper_price_eligible_rows = input_month_end_rows
+    if paper_sample_filters:
+        options = options[options.avg_call_iv.notna() & options.avg_put_iv.notna()].copy()
+        paper_both_sides_rows = len(options)
+        prior = prices[prices.trade_date.eq(prices.period.map(ends))][
+            ["period", "security_id", "close"]
+        ].copy()
+        prior["period"] = prior.period + 1
+        prior = prior.rename(columns={"close": "prior_month_close"})
+        options = options.merge(prior, on=["period", "security_id"], how="left", validate="many_to_one")
+        options = options[options.prior_month_close.ge(1)].copy()
+        paper_price_eligible_rows = len(options)
     options["rebalance_date"] = options.period.map(rebalance_dates)
     options = options[options.rebalance_date.notna()].copy()
     options["rebalance_close_at"] = options.rebalance_date.map(market_close_utc)
@@ -201,6 +215,8 @@ def build_monthly_panel(
             "verified_us_common_stock_rows": verified_common,
             "unknown_us_common_stock_rows": unknown_common,
             "month_end_option_rows": input_month_end_rows,
+            "paper_both_sides_rows": paper_both_sides_rows,
+            "paper_price_eligible_rows": paper_price_eligible_rows,
             "timely_month_end_rows": timely_rows,
             "rows_with_month_end_stock_price": priced_rows,
             "rows_with_positive_base_price_and_cap": eligible_price_rows,
@@ -315,6 +331,8 @@ def build_monthly_panel(
         "verified_us_common_stock_rows": verified_common,
         "unknown_us_common_stock_rows": unknown_common,
         "month_end_option_rows": input_month_end_rows,
+        "paper_both_sides_rows": paper_both_sides_rows,
+        "paper_price_eligible_rows": paper_price_eligible_rows,
         "timely_month_end_rows": timely_rows,
         "rows_with_month_end_stock_price": priced_rows,
         "rows_with_positive_base_price_and_cap": eligible_price_rows,

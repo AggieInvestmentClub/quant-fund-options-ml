@@ -127,6 +127,7 @@ def run_pipeline(
     panel, coverage = build_monthly_panel(
         tables, min_snapshot_members=0 if pilot else 450,
         paper_control_lags=experiment == "paper",
+        paper_sample_filters=experiment == "paper",
     )
     write_coverage(output_dir / "coverage.json", coverage)
     _parquet(output_dir / "monthly_panel.parquet", panel)

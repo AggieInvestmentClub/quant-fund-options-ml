@@ -47,6 +47,24 @@ def test_paper_controls_use_one_and_six_month_lags(tmp_path):
     assert (sample.quarterly_controls_as_of_date.dt.to_period("M") <= pd.Period("2015-07")).all()
 
 
+def test_paper_sample_requires_both_option_sides_and_prior_dollar_price(tmp_path):
+    root = tmp_path / "input"
+    write_synthetic_handoff(root, n_stocks=5, n_months=18, seed=13)
+    tables = load_handoff(root)
+    prices = tables["stock_prices"]
+    jan = prices.trade_date.dt.to_period("M").eq(pd.Period("2015-01"))
+    jan_end = prices.loc[jan, "trade_date"].max()
+    prices.loc[prices.trade_date.eq(jan_end) & prices.security_id.eq("S0000"), "close"] = 0.5
+    options = tables["options_features"]
+    feb = options.trade_date.dt.to_period("M").eq(pd.Period("2015-02"))
+    options.loc[feb & options.security_id.eq("S0001"), "avg_put_iv"] = np.nan
+    panel, coverage = build_monthly_panel(tables, paper_sample_filters=True)
+    feb_rows = panel[panel.period.eq(pd.Period("2015-02"))]
+    assert not feb_rows.security_id.isin(["S0000", "S0001"]).any()
+    assert coverage["paper_both_sides_rows"] < coverage["month_end_option_rows"]
+    assert coverage["paper_price_eligible_rows"] < coverage["paper_both_sides_rows"]
+
+
 def test_point_in_time_paper_schedule_excludes_unmatured_labels(tmp_path):
     root = tmp_path / "input"
     write_synthetic_handoff(root, n_stocks=24, n_months=48, seed=8)
