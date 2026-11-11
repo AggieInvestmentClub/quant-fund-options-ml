@@ -19,7 +19,7 @@ import pandas as pd
 from .backtest import attach_forward_trade_returns, backtest_all
 from .ben_handoff import convert_ben_file
 from .data import PAPER_CONTROLS, build_monthly_panel, load_handoff, write_coverage
-from .factors import load_monthly_factors, newey_west_alpha
+from .factors import load_monthly_factors, newey_west_alpha, newey_west_paired_mean
 from .models import prediction_metrics, train_and_score
 from .monte_carlo import monte_carlo_all
 from .paper import train_paper
@@ -88,6 +88,7 @@ def run_pipeline(
         "monthly_returns.parquet", "portfolio_metrics.json", "monte_carlo.json", "status.json",
         "factor_metrics.json", "paper_comparison.json",
         "paper_descriptives.json",
+        "paper_baseline_tests.json",
     )
     existing = [name for name in expected_outputs if (output_dir / name).exists()]
     if existing:
@@ -177,6 +178,19 @@ def run_pipeline(
     _json(output_dir / "prediction_metrics.json", prediction_metrics(predictions))
     _json(output_dir / "portfolio_metrics.json", portfolio_report)
     _json(output_dir / "monte_carlo.json", mc)
+    if experiment == "paper":
+        paired_report = {}
+        for (kind, universe), group in monthly.groupby(["model", "universe"]):
+            baseline = group[group.feature_set.eq("B")]
+            if baseline.empty:
+                continue
+            for specification, candidate in group.groupby("feature_set"):
+                if specification == "B":
+                    continue
+                paired_report[f"{specification}/{kind}/{universe}"] = newey_west_paired_mean(
+                    candidate, baseline,
+                )
+        _json(output_dir / "paper_baseline_tests.json", paired_report)
     if factor_file is not None:
         factors = load_monthly_factors(factor_file)
         factor_report = {}

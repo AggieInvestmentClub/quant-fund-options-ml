@@ -138,6 +138,8 @@ def test_portfolio_weights_returns_and_transaction_costs():
     trades, monthly = backtest_one(predictions)
     assert len(trades) == 6
     assert monthly.gross_return.iloc[0] == pytest.approx(0.2)
+    assert monthly.long_return.iloc[0] == pytest.approx(0.1)
+    assert monthly.crash_stock_return.iloc[0] == pytest.approx(-0.1)
     assert monthly.transaction_cost.iloc[0] == pytest.approx(0.006)
     assert monthly.transaction_cost.iloc[1] == pytest.approx(0)
     assert monthly.transaction_cost.iloc[-1] == pytest.approx(0.006)

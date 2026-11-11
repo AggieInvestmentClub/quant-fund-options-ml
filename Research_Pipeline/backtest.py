@@ -112,6 +112,7 @@ def backtest_one(predictions: pd.DataFrame, *, cost_bps: float = 30.0) -> tuple[
             "period": period, "rebalance_date": chosen.rebalance_date.iloc[0],
             "exit_date": chosen.exit_date.iloc[0], "gross_return": gross,
             "long_return": long_return, "short_return": short_return,
+            "crash_stock_return": -short_return,
             "transaction_cost": cost, "borrow_cost_3pct": borrow_3,
             "net_return_0pct_borrow": gross - cost,
             "net_return_3pct_borrow": gross - cost - borrow_3,
@@ -170,6 +171,8 @@ def backtest_all(predictions: pd.DataFrame, prices: pd.DataFrame) -> tuple[pd.Da
             all_trades.append(trades)
             all_returns.append(monthly)
             report[f"{features}/{model}/{universe}"] = {
+                "jump_leg": portfolio_metrics(monthly, "long_return"),
+                "crash_stock_leg": portfolio_metrics(monthly, "crash_stock_return"),
                 "gross": portfolio_metrics(monthly, "gross_return"),
                 "net_0pct_borrow": portfolio_metrics(monthly, "net_return_0pct_borrow"),
                 "net_3pct_borrow": portfolio_metrics(monthly, "net_return_3pct_borrow"),

@@ -173,6 +173,10 @@ when comparing with the paper's reported mean. Reproducing those numbers
 requires comparable option prices, universe, company controls, time window,
 and delisting treatment. A difference is a research finding to investigate,
 not automatically a software bug.
+The portfolio report also separates the jump-stock long leg and crash-stock
+short selection. `paper_baseline_tests.json` gives paired Newey-West tests of
+each gross long-short strategy against the corresponding stock-only B model,
+matching the role of the parenthesized comparisons in Table 6.
 `paper_descriptives.json` records jump/crash/normal frequencies and raw IV/Greek
 means for a Table 2/4 sanity check, even when the model run is blocked by
 history. `coverage.json` includes month-by-month counts of usable, labeled,

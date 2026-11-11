@@ -8,7 +8,7 @@ import pytest
 
 from Research_Pipeline.ben_handoff import convert_ben_file
 from Research_Pipeline.data import PAPER_OPTIONS, build_monthly_panel, load_handoff
-from Research_Pipeline.factors import FACTOR_COLUMNS, newey_west_alpha
+from Research_Pipeline.factors import FACTOR_COLUMNS, newey_west_alpha, newey_west_paired_mean
 from Research_Pipeline.paper import normalize_by_month, paper_feature_sets, train_paper
 from Research_Pipeline.paper_reference import compare_table_six
 from Research_Pipeline.paper_descriptives import describe_panel
@@ -76,6 +76,18 @@ def test_factor_alpha_and_missing_month_gate():
     assert result["factor_betas"]["Mkt-RF"] == pytest.approx(0.3, abs=1e-10)
     with pytest.raises(ValueError, match="missing factor months"):
         newey_west_alpha(monthly, factors.iloc[1:])
+
+
+def test_paired_newey_west_requires_same_months():
+    months = pd.period_range("2020-01", periods=12, freq="M")
+    baseline = pd.DataFrame({"period": months, "gross_return": np.linspace(-0.04, 0.05, 12)})
+    candidate = baseline.copy()
+    candidate["gross_return"] += np.linspace(0.01, 0.04, 12)
+    result = newey_west_paired_mean(candidate, baseline)
+    assert result["mean_monthly_difference"] == pytest.approx(0.025)
+    assert result["newey_west_t"] > 0
+    with pytest.raises(ValueError, match="months differ"):
+        newey_west_paired_mean(candidate.iloc[1:], baseline)
 
 
 def test_wide_adapter_flags_proxies_and_conservative_availability(tmp_path):
