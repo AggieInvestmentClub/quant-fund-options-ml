@@ -42,6 +42,11 @@ were copied.
 5. The optional Default Strike stage reuses those IVs, computes Greeks at each
    actual strike, and produces delta-bucket, skew, term-structure, and gamma
    features.
+6. The Dataset Prep stage (`Dataset_Prep/`) merges the ATM Greek averages (10 call/put averages),
+   Default Strike features (30/60/90-day skew, risk-reversal, and gamma metrics),
+   underlying stock OHLCV / adjusted prices / volume, and point-in-time S&P 500
+   constituency flags into a high-performance daily Parquet table (`ml_dataset_daily/`
+   and `ml_dataset_daily.parquet`).
 
 The server wrappers default to `/srv/data/options_model_features` for pipeline
 data and `/srv/data/stocks` for stock histories. Generated data, `.env`, and
@@ -77,6 +82,25 @@ export OPTIONS_RISK_FREE_RATE_CSV=/path/to/DGS3MO_risk_free_rate.csv
   --start-date YYYY-MM-DD --end-date YYYY-MM-DD \
   --workers 1
 ```
+
+### ML Dataset Preparation & Validation (Stage 3)
+
+Export the consolidated daily Parquet dataset across all historical trade dates:
+
+```bash
+.venv/bin/python Dataset_Prep/export_daily_parquet.py --build-single-file
+```
+
+Validate the exported Parquet dataset and print the feature availability & missingness matrix:
+
+```bash
+.venv/bin/python Dataset_Prep/audit_and_validate.py
+```
+
+For detailed instructions on using the data for ML modeling (target return calculations, label construction, missingness handling), algorithmic backtesting (zero-lookahead execution rules, unadjusted fill prices), and managing the daily cron operations, see the [ML & Backtesting User Guide](Dataset_Prep/USER_GUIDE.md).
+
+The daily automated runner `Default_Strike_Pipeline/run_daily_pipeline.sh` automatically runs
+Stages 1, 2, and 3 sequentially during the morning cron job.
 
 The full `Data_Pipeline/main.py` workflow additionally needs Massive access
 (`MASSIVE_S3_ACCESS_KEY` and `MASSIVE_API_KEY`) and either LSEG access or

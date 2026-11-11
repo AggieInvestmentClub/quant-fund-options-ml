@@ -6,3 +6,4 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
 "$REPO_ROOT/data_copy/run_main_to_srv.sh"
 "$SCRIPT_DIR/run_default_strike_daily.sh"
+"$REPO_ROOT/Dataset_Prep/run_export_daily.sh"
