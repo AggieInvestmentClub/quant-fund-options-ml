@@ -17,9 +17,13 @@ from pathlib import Path
 import pandas as pd
 
 from .backtest import attach_forward_trade_returns, backtest_all
+from .ben_handoff import convert_ben_file
 from .data import PAPER_CONTROLS, build_monthly_panel, load_handoff, write_coverage
+from .factors import load_monthly_factors, newey_west_alpha
 from .models import prediction_metrics, train_and_score
 from .monte_carlo import monte_carlo_all
+from .paper import train_paper
+from .paper_reference import compare_table_six
 from .synthetic import write_synthetic_handoff
 
 
@@ -36,7 +40,8 @@ def _parquet(path: Path, frame: pd.DataFrame) -> None:
     output.to_parquet(path, index=False)
 
 
-def _manifest(input_dir: Path, *, seed: int, iterations: int, pilot: bool, synthetic: bool) -> dict:
+def _manifest(input_dir: Path, *, seed: int, iterations: int, pilot: bool,
+              synthetic: bool, factor_file: Path | None = None) -> dict:
     files = sorted(input_dir.glob("*.parquet"))
     digests = {}
     for file in files:
@@ -45,6 +50,12 @@ def _manifest(input_dir: Path, *, seed: int, iterations: int, pilot: bool, synth
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 sha.update(chunk)
         digests[file.name] = {"sha256": sha.hexdigest(), "bytes": file.stat().st_size}
+    if factor_file is not None:
+        sha = hashlib.sha256()
+        with Path(factor_file).open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                sha.update(chunk)
+        digests[str(factor_file)] = {"sha256": sha.hexdigest(), "bytes": Path(factor_file).stat().st_size}
     try:
         commit = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1],
@@ -63,6 +74,10 @@ def _manifest(input_dir: Path, *, seed: int, iterations: int, pilot: bool, synth
 def run_pipeline(
     input_dir: Path, output_dir: Path, *, pilot: bool = False,
     synthetic: bool = False, iterations: int = 2_000, seed: int = 17,
+    experiment: str = "extended", label_policy: str = "point_in_time",
+    paper_start: str = "2006-01", paper_end: str = "2022-12",
+    factor_file: Path | None = None,
+    pilot_train_months: int = 12, pilot_test_months: int = 6,
 ) -> dict:
     input_dir, output_dir = Path(input_dir), Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -70,25 +85,44 @@ def run_pipeline(
         "manifest.json", "coverage.json", "monthly_panel.parquet", "model_selection.json",
         "predictions.parquet", "prediction_metrics.json", "trades.parquet",
         "monthly_returns.parquet", "portfolio_metrics.json", "monte_carlo.json", "status.json",
+        "factor_metrics.json", "paper_comparison.json",
     )
     existing = [name for name in expected_outputs if (output_dir / name).exists()]
     if existing:
         raise FileExistsError(f"use a fresh output directory; existing results: {existing}")
     tables = load_handoff(input_dir)
+    if experiment not in {"extended", "paper"}:
+        raise ValueError("experiment must be extended or paper")
+    if pilot_train_months < 1 or pilot_test_months < 3:
+        raise ValueError("pilot needs at least one training month and three test months")
     synthetic = synthetic or any(
         table.source_version.astype(str).str.contains("synthetic", case=False).any()
         for table in tables.values()
     )
-    _json(output_dir / "manifest.json", _manifest(input_dir, seed=seed, iterations=iterations, pilot=pilot, synthetic=synthetic))
-    panel, coverage = build_monthly_panel(tables, min_snapshot_members=0 if pilot else 450)
+    _json(output_dir / "manifest.json", _manifest(input_dir, seed=seed, iterations=iterations,
+                                                  pilot=pilot, synthetic=synthetic,
+                                                  factor_file=factor_file))
+    panel, coverage = build_monthly_panel(
+        tables, min_snapshot_members=0 if pilot else 450,
+        paper_control_lags=experiment == "paper",
+    )
     write_coverage(output_dir / "coverage.json", coverage)
     _parquet(output_dir / "monthly_panel.parquet", panel)
     if not pilot:
         reasons = []
         if synthetic:
             reasons.append("synthetic source data cannot produce a research backtest")
+        if experiment == "paper" and factor_file is None:
+            reasons.append("paper research backtest requires FF5 plus momentum factors for alpha")
         if coverage["unknown_us_common_stock_rows"]:
             reasons.append("US common-stock status is missing for some option rows")
+        adapter_path = input_dir / "adapter_report.json"
+        if adapter_path.exists():
+            adapter = json.loads(adapter_path.read_text())
+            if adapter.get("identity") == "ticker_proxy_pilot_only":
+                reasons.append("ticker proxy is not a stable security identifier")
+            if experiment == "paper" and adapter.get("option_price_basis") != "bid_ask_midpoint":
+                reasons.append("paper reproduction requires bid/ask midpoint option prices")
         if not panel[PAPER_CONTROLS].notna().any().all():
             reasons.append("one or more paper stock/company controls have no observations")
         if coverage["missing_labels_with_target_month_present"]:
@@ -98,11 +132,24 @@ def run_pipeline(
             _json(output_dir / "status.json", status)
             return status
     try:
-        predictions, model_report = train_and_score(
-            panel, test_months=6 if pilot else 24,
-            min_train_months=12 if pilot else 120,
-            validation_months=3 if pilot else 24, seed=seed,
-        )
+        if experiment == "paper":
+            predictions, model_report = train_paper(
+                panel, first_test=paper_start, last_test=paper_end,
+                label_policy=label_policy, min_train_months=pilot_train_months if pilot else 120,
+                seed=seed,
+            )
+            if not pilot and model_report["test_months"] < 24:
+                raise ValueError("paper research backtest needs at least 24 labeled test months")
+            expected_months = len(pd.period_range(paper_start, paper_end, freq="M"))
+            if not pilot and model_report["test_months"] != expected_months:
+                raise ValueError(f"paper window has {model_report['test_months']} labeled months; "
+                                 f"need all {expected_months} months from {paper_start} through {paper_end}")
+        else:
+            predictions, model_report = train_and_score(
+                panel, test_months=pilot_test_months if pilot else 24,
+                min_train_months=pilot_train_months if pilot else 120,
+                validation_months=3 if pilot else 24, seed=seed,
+            )
     except ValueError as exc:
         status = {"status": "blocked_data_gate", "reason": str(exc), "coverage": coverage}
         _json(output_dir / "status.json", status)
@@ -126,9 +173,32 @@ def run_pipeline(
     _json(output_dir / "prediction_metrics.json", prediction_metrics(predictions))
     _json(output_dir / "portfolio_metrics.json", portfolio_report)
     _json(output_dir / "monte_carlo.json", mc)
+    if factor_file is not None:
+        factors = load_monthly_factors(factor_file)
+        factor_report = {}
+        for (features, kind, universe), group in monthly.groupby(["feature_set", "model", "universe"]):
+            try:
+                factor_report[f"{features}/{kind}/{universe}"] = {
+                    field: newey_west_alpha(group, factors, return_column=field)
+                    for field in ("gross_return", "net_return_0pct_borrow", "net_return_3pct_borrow")
+                }
+            except ValueError as exc:
+                if not pilot:
+                    raise
+                factor_report[f"{features}/{kind}/{universe}"] = {"status": f"unavailable: {exc}"}
+        _json(output_dir / "factor_metrics.json", factor_report)
+    if experiment == "paper":
+        comparison = compare_table_six(portfolio_report)
+        comparison["data_comparable_to_paper"] = False if pilot or synthetic else "not_assessed"
+        comparison["paper_best_gross_alpha_monthly_ff5_mom"] = 0.021
+        comparison["paper_best_gross_alpha_newey_west_t"] = 4.59
+        _json(output_dir / "paper_comparison.json", comparison)
     status = {
-        "status": "engineering_pilot_inconclusive" if pilot or synthetic else "research_backtest_complete",
+        "status": "engineering_pilot_inconclusive" if pilot or synthetic else
+                  "paper_replay_hindsight_diagnostic" if experiment == "paper" and label_policy == "paper_stated"
+                  else "research_backtest_complete",
         "synthetic_input": synthetic, "months_scored": model_report["test_months"],
+        "experiment": experiment, "label_policy": label_policy,
         "feature_model_combinations": len(model_report["candidate_models"]),
         "monte_carlo_iterations": iterations,
     }
@@ -144,10 +214,24 @@ def main() -> int:
     parser.add_argument("--synthetic-demo", action="store_true", help="generate synthetic handoff and run an engineering pilot")
     parser.add_argument("--iterations", type=int, help="Monte Carlo iterations (default 2000, synthetic demo 20)")
     parser.add_argument("--seed", type=int, default=17)
+    parser.add_argument("--experiment", choices=("extended", "paper"), default="extended")
+    parser.add_argument("--label-policy", choices=("point_in_time", "paper_stated"), default="point_in_time")
+    parser.add_argument("--paper-start", default="2006-01")
+    parser.add_argument("--paper-end", default="2022-12")
+    parser.add_argument("--factor-file", type=Path, help="monthly decimal FF5 plus momentum file")
+    parser.add_argument("--wide-input", type=Path, help="Ben's ml_dataset_daily.parquet")
+    parser.add_argument("--ticker-history", type=Path)
+    parser.add_argument("--allow-ticker-proxy", action="store_true", help="pilot only; not stable identity")
+    parser.add_argument("--pilot-train-months", type=int, default=12)
+    parser.add_argument("--pilot-test-months", type=int, default=6)
     args = parser.parse_args()
     if args.synthetic_demo:
         input_dir = args.output_dir / "synthetic_input"
         write_synthetic_handoff(input_dir, n_stocks=40, n_months=60, seed=args.seed)
+    elif args.wide_input is not None:
+        input_dir = args.output_dir / "adapted_handoff"
+        convert_ben_file(args.wide_input, input_dir, ticker_history=args.ticker_history,
+                         allow_ticker_proxy=args.allow_ticker_proxy)
     elif args.input_dir is None:
         parser.error("--input-dir is required unless --synthetic-demo is set")
     else:
@@ -156,6 +240,10 @@ def main() -> int:
     result = run_pipeline(
         input_dir, args.output_dir, pilot=args.engineering_pilot or args.synthetic_demo,
         synthetic=args.synthetic_demo, iterations=iterations, seed=args.seed,
+        experiment=args.experiment, label_policy=args.label_policy,
+        paper_start=args.paper_start, paper_end=args.paper_end,
+        factor_file=args.factor_file,
+        pilot_train_months=args.pilot_train_months, pilot_test_months=args.pilot_test_months,
     )
     print(json.dumps(result, indent=2, default=str))
     return 0 if result["status"] != "blocked_data_gate" else 2

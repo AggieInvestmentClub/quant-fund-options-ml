@@ -103,10 +103,15 @@ def backtest_one(predictions: pd.DataFrame, *, cost_bps: float = 30.0) -> tuple[
             turnover += sum(abs(value) for value in weights.values())
         cost = turnover * cost_bps / 10_000
         gross = float((chosen.weight * chosen.stock_return).sum())
+        long_return = float((chosen.loc[chosen.side.eq("long"), "weight"] *
+                             chosen.loc[chosen.side.eq("long"), "stock_return"]).sum())
+        short_return = float((chosen.loc[chosen.side.eq("short"), "weight"] *
+                              chosen.loc[chosen.side.eq("short"), "stock_return"]).sum())
         borrow_3 = float(abs(chosen.loc[chosen.side.eq("short"), "weight"].sum()) * 0.03 / 12)
         returns.append({
             "period": period, "rebalance_date": chosen.rebalance_date.iloc[0],
             "exit_date": chosen.exit_date.iloc[0], "gross_return": gross,
+            "long_return": long_return, "short_return": short_return,
             "transaction_cost": cost, "borrow_cost_3pct": borrow_3,
             "net_return_0pct_borrow": gross - cost,
             "net_return_3pct_borrow": gross - cost - borrow_3,
@@ -134,6 +139,8 @@ def portfolio_metrics(monthly: pd.DataFrame, return_col: str = "net_return_0pct_
     drawdowns = np.r_[1.0, wealth] / peaks - 1
     return {
         "months": len(values), "annualized_return": annual_return,
+        "annualized_arithmetic_mean": float(12 * np.mean(values)),
+        "annualized_volatility": float(np.sqrt(12) * standard_deviation),
         "sharpe": sharpe, "max_drawdown": float(drawdowns.min()),
         "mean_monthly_return": float(np.mean(values)),
         "mean_monthly_turnover": float(monthly.turnover.mean()) if "turnover" in monthly else None,

@@ -155,6 +155,7 @@ def market_close_utc(day: pd.Timestamp) -> pd.Timestamp:
 
 def build_monthly_panel(
     tables: dict[str, pd.DataFrame], *, min_snapshot_members: int = 0,
+    paper_control_lags: bool = False,
 ) -> tuple[pd.DataFrame, dict]:
     options = tables["options_features"].copy()
     verified_common = int(options.is_us_common_stock.eq(True).fillna(False).sum())
@@ -225,6 +226,35 @@ def build_monthly_panel(
     else:
         joined = []
         for day, month_rows in panel.groupby("trade_date", sort=True):
+            if paper_control_lags:
+                lagged = month_rows.copy()
+                for lag, columns, prefix in (
+                    (1, [c for c in PAPER_CONTROLS if c not in ("TANG", "SG")], "monthly"),
+                    (6, ["TANG", "SG"], "quarterly"),
+                ):
+                    cutoff = (pd.Period(day, freq="M") - lag).to_timestamp(how="end").normalize()
+                    eligible_lagged = controls[controls.as_of_date.le(cutoff)]
+                    if eligible_lagged.empty:
+                        lagged[f"{prefix}_controls_as_of_date"] = pd.NaT
+                        lagged[f"{prefix}_controls_available_at"] = pd.NaT
+                        for column in columns:
+                            lagged[column] = np.nan
+                        continue
+                    names = {"as_of_date": f"{prefix}_controls_as_of_date",
+                             "controls_available_at": f"{prefix}_controls_available_at",
+                             "controls_source_version": f"{prefix}_controls_source_version"}
+                    lookup = eligible_lagged[["security_id", "as_of_date", "controls_available_at",
+                                              "controls_source_version", *columns]].rename(columns=names)
+                    lagged = pd.merge_asof(
+                        lagged.sort_values("score_at"),
+                        lookup.sort_values(names["controls_available_at"]),
+                        left_on="score_at", right_on=names["controls_available_at"],
+                        by="security_id", direction="backward",
+                    )
+                lagged["as_of_date"] = lagged["monthly_controls_as_of_date"]
+                lagged["controls_available_at"] = lagged["monthly_controls_available_at"]
+                joined.append(lagged)
+                continue
             eligible_controls = controls[controls.as_of_date.le(day)]
             if eligible_controls.empty:
                 blank = month_rows.copy()

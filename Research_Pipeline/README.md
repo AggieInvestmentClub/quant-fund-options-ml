@@ -113,3 +113,105 @@ each run; the command refuses to mix new results with old files.
 The software cannot infer borrow availability, exact spreads, historical
 provider revisions, or the paper's missing OptionMetrics filters from these
 tables. Report those limitations with any real-data result.
+
+## Paper replication mode
+
+`--experiment paper` runs the 19 Table 3 feature specifications (stock-only B,
+and SDGTV/S/D/G/T/V for call-plus-put, call-only, and put-only) with both
+class-balanced logit and LightGBM. Each stock variable is lagged one month,
+except TANG and SG, which are lagged six months. Missing features are filled
+by the same month's cross-sectional median, then all 19 inputs are z-scored
+within that month. LightGBM uses its default tree parameters, a chronological
+80/20 fitting/validation split, and five rounds of early stopping. Logit uses
+all eligible training observations. The saved model report records each
+training window and the LightGBM best iteration.
+
+The paper says the January 2006 prediction was trained through December 2005,
+but the late-2005 **12-month labels were unknowable in January 2006**. Two
+explicit schedules make this discrepancy visible:
+
+```bash
+# Tradable schedule: only fully matured labels, at least 120 training months.
+# With options beginning in 1996, the earliest possible start is in 2007.
+.venv/bin/python -m Research_Pipeline.run \
+  --input-dir /path/to/complete_handoff --output-dir /path/to/scratch/safe \
+  --experiment paper --label-policy point_in_time \
+  --paper-start 2007-01 --paper-end 2022-12 \
+  --factor-file /path/to/monthly_factors.parquet
+
+# Literal paper-stated 2006-2022 schedule. This uses future-known labels
+# for the early training months and is explicitly a hindsight diagnostic.
+.venv/bin/python -m Research_Pipeline.run \
+  --input-dir /path/to/complete_handoff --output-dir /path/to/scratch/paper_stated \
+  --experiment paper --label-policy paper_stated \
+  --paper-start 2006-01 --paper-end 2022-12 \
+  --factor-file /path/to/monthly_factors.parquet
+```
+
+Fetch and freeze the official French monthly FF5 and momentum archives into a
+fresh scratch directory with:
+
+```bash
+.venv/bin/python -m Research_Pipeline.fetch_factors \
+  --output-dir /path/to/scratch/french_factors
+```
+
+The factor file contains decimal returns, source hashes, and a release-vintage
+manifest. `factor_metrics.json` reports monthly alpha and Newey-West t
+statistics for gross and both net cost cases. The monthly factors are aligned
+to the calendar month after the signal; our first-close-to-first-close holding
+period differs slightly from calendar-month factors, so this alpha is an
+approximation until matching daily factors are used. Current French factor
+history may also differ from the paper's original data vintage.
+
+`paper_comparison.json` compares all 38 model/specification portfolios with
+the paper's Table 6 (including 30% gross annual arithmetic mean and 1.37
+Sharpe for LGBM-SDGTV cp, versus 10% and 0.51 for stock-only LGBM-B).
+`portfolio_metrics.json` includes both
+compound annualized return and annualized arithmetic mean; use the latter
+when comparing with the paper's reported mean. Reproducing those numbers
+requires comparable option prices, universe, company controls, time window,
+and delisting treatment. A difference is a research finding to investigate,
+not automatically a software bug.
+
+`prediction_metrics.json` reports one-vs-rest accuracy ratio (`2 × AUC − 1`)
+and precision/FDR among each month's top 5% picks. The paper does not fully
+specify the implementation behind its Table 5 PPV/FDR numbers, so those two
+columns are diagnostic here rather than asserted to reproduce Table 5.
+
+## Ben's current wide file
+
+The server file `/srv/data/options_model_features/ml_dataset_daily.parquet`
+can be adapted without modifying it:
+
+```bash
+.venv/bin/python -m Research_Pipeline.run \
+  --wide-input /srv/data/options_model_features/ml_dataset_daily.parquet \
+  --allow-ticker-proxy --engineering-pilot --iterations 20 \
+  --pilot-train-months 3 --pilot-test-months 3 \
+  --output-dir /path/to/fresh/scratch/ben_pilot
+```
+
+The adapter writes `adapted_handoff/` and `adapter_report.json` under that
+scratch directory. `--allow-ticker-proxy` explicitly makes ticker a temporary
+identifier for a software pilot; a full study requires `--ticker-history`
+with stable IDs. It treats the supplied `is_sp500` value as an observation
+flag, not as complete date-specific constituent snapshots, and marks US common
+stock status unknown. It records how many supplied option availability times
+precede an assumed 11:30 a.m. New York provider-readiness time on the next
+tradable date; that assumption needs upstream publication logs before a live
+trading claim. The wide file uses last-trade option prices, not the paper's
+bid/ask midpoints. Missing stock prices are counted and excluded from the
+canonical price handoff, then coverage and backtest gates expose the impact.
+
+As audited on 2026-11-11, this file covers April 2024 through November 2026,
+with 318,202 stock-days, 545 tickers, and 32 calendar months, the last of
+which is incomplete. It is almost entirely S&P names. The file lacks the
+paper's nine company controls and enough history for 120 matured training
+months plus 24 labeled test months. Expect a coverage report and
+possibly `blocked_data_gate` if labels, classes, or executable stock prices
+are insufficient. A short-history run that passes is still an engineering
+pilot, not paper or portfolio evidence. Obtain a broad
+optionable-US-common-stock history back to roughly 1996 for literal
+replication, dated stock controls, stable security IDs, quote-based option
+inputs, and complete historical S&P snapshots before claiming a reproduction.

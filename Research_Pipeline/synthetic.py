@@ -23,6 +23,19 @@ def write_synthetic_handoff(root: Path, *, n_stocks: int = 60, n_months: int = 1
     log_prices = np.log(rng.uniform(20, 100, size=n_stocks))
     states = np.resize(np.array([-1.0, 0.0, 1.0]), n_stocks)
     shares = rng.uniform(2e7, 1e9, size=n_stocks)
+    # Prehistory lets the paper's six-month lagged controls exist in the first
+    # modeled month. These rows remain synthetic and carry no financial claim.
+    for period in pd.period_range(periods[0] - 6, periods=6, freq="M"):
+        month_end = pd.offsets.BMonthEnd().rollback(period.to_timestamp(how="end").normalize())
+        for stock_index in range(n_stocks):
+            control = {
+                "as_of_date": month_end, "available_at": _at(month_end, 17),
+                "security_id": f"S{stock_index:04d}", "ticker": f"T{stock_index:04d}",
+                "source_version": "synthetic-v1",
+            }
+            for name in PAPER_CONTROLS:
+                control[name] = float(rng.normal() + 0.2 * states[stock_index])
+            controls.append(control)
     for month_index, period in enumerate(periods):
         month_end = pd.offsets.BMonthEnd().rollback(period.to_timestamp(how="end").normalize())
         rebalance = month_end + pd.offsets.BDay(1)
