@@ -252,3 +252,12 @@ pilot, not paper or portfolio evidence. Obtain a broad
 optionable-US-common-stock history back to roughly 1996 for literal
 replication, dated stock controls, stable security IDs, quote-based option
 inputs, and complete historical S&P snapshots before claiming a reproduction.
+For the paper's January 1996 starting cohort, stock closes are also needed
+for December 1995 and six-month-lagged company controls need 1995 prehistory;
+December 2023 stock prices are needed to mature December 2022 labels.
+Massive's documented [options day aggregates](https://massive.com/docs/flat-files/options/day-aggregates)
+begin in June 2014, [options quote files](https://massive.com/docs/flat-files/options/quotes)
+in March 2022, and [stock day aggregates](https://massive.com/docs/flat-files/stocks/day-aggregates)
+in September 2003. A higher Massive plan does not supply the paper's 1996
+starting history; an older historical provider or licensed research data is
+required for that part of the experiment.

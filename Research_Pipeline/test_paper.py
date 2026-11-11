@@ -150,6 +150,10 @@ def test_wide_adapter_flags_proxies_and_conservative_availability(tmp_path):
     assert len(supplemented_prices) == 6
     assert supplemented_prices.market_cap.isna().sum() == 2
     assert supplemented_prices.source_version.str.startswith("stock-csv-manifest-sha256:").all()
+    no_volume = tmp_path / "wide_without_volume.parquet"
+    pd.DataFrame(rows).drop(columns="stock_volume").to_parquet(no_volume, index=False)
+    assert convert_ben_file(no_volume, tmp_path / "with_stocks_no_wide_volume",
+                            stocks_dir=stocks, allow_ticker_proxy=True)["stock_history_rows"] == 6
 
 
 def test_calculator_reconciliation_catches_one_changed_value(tmp_path):

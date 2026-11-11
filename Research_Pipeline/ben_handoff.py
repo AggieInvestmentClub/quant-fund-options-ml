@@ -97,7 +97,7 @@ def convert_ben_file(
     if absent:
         raise ValueError(f"wide feature file missing {sorted(absent)}")
     volume_col = next((name for name in ("stock_volume", "volume") if name in raw), None)
-    if volume_col is None:
+    if volume_col is None and stocks_dir is None:
         raise ValueError("wide feature file missing stock volume")
     raw["trade_date"] = pd.to_datetime(raw.trade_date).dt.normalize()
     raw["tradable_date"] = pd.to_datetime(raw.tradable_date).dt.normalize()
