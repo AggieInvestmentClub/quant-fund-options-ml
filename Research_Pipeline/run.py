@@ -21,7 +21,7 @@ from .backtest import attach_forward_trade_returns, backtest_all
 from .ben_handoff import convert_ben_file
 from .data import PAPER_CONTROLS, build_monthly_panel, load_handoff, write_coverage
 from .factors import load_monthly_factors, newey_west_alpha, newey_west_paired_mean
-from .models import prediction_metrics, train_and_score
+from .models import _training_rows, prediction_metrics, train_and_score
 from .monte_carlo import monte_carlo_all
 from .paper import train_paper
 from .paper_descriptives import describe_panel
@@ -88,6 +88,53 @@ def _manifest(input_dir: Path, *, seed: int, iterations: int, pilot: bool,
     }
 
 
+def _research_readiness(panel: pd.DataFrame, *, experiment: str, label_policy: str,
+                        paper_start: str, paper_end: str) -> tuple[dict, list[str]]:
+    """Show the date gate even when other required inputs are also missing."""
+    labeled = sorted(panel.loc[panel.label.notna(), "period"].unique())
+    report = {"labeled_months": len(labeled)}
+    reasons = []
+    if experiment == "paper":
+        expected = pd.period_range(paper_start, paper_end, freq="M")
+        if not len(expected):
+            raise ValueError("last paper test month precedes first")
+        present = set(labeled)
+        test_count = sum(period in present for period in expected)
+        report.update({"required_test_months": len(expected), "labeled_paper_test_months": test_count,
+                       "first_required_test_month": str(expected[0]),
+                       "last_required_test_month": str(expected[-1])})
+        if test_count != len(expected):
+            reasons.append(f"paper window has {test_count} of {len(expected)} labeled test months")
+        first_test = expected[0]
+        training = panel.loc[panel.period.lt(first_test) & panel.label.notna()]
+        if label_policy == "point_in_time" and first_test in set(panel.period):
+            cutoff = panel.loc[panel.period.eq(first_test), "rebalance_close_at"].max()
+            training = _training_rows(panel, cutoff)
+        train_count = training.period.nunique()
+        report["initial_training_months"] = int(train_count)
+        report["required_training_months"] = 120
+        if train_count < 120:
+            reasons.append(f"only {train_count} training months before {first_test}; need 120")
+    else:
+        report["required_test_months"] = 24
+        if len(labeled) < 24:
+            reasons.append(f"only {len(labeled)} labeled months; need 24 test months")
+            report["initial_matured_training_months"] = None
+            if len(labeled) < 120:
+                reasons.append(f"only {len(labeled)} labeled months total; need 120 matured training months")
+        else:
+            first_test = labeled[-24]
+            cutoff = panel.loc[panel.period.eq(first_test), "rebalance_close_at"].max()
+            train_count = _training_rows(panel, cutoff).period.nunique()
+            report.update({"first_test_month": str(first_test),
+                           "initial_matured_training_months": int(train_count)})
+            if train_count < 120:
+                reasons.append(f"only {train_count} matured training months before {first_test}; need 120")
+        report["required_matured_training_months"] = 120
+    report["ready"] = not reasons
+    return report, reasons
+
+
 def run_pipeline(
     input_dir: Path, output_dir: Path, *, pilot: bool = False,
     synthetic: bool = False, iterations: int = 2_000, seed: int = 17,
@@ -129,12 +176,17 @@ def run_pipeline(
         paper_control_lags=experiment == "paper",
         paper_sample_filters=experiment == "paper",
     )
+    readiness, readiness_reasons = _research_readiness(
+        panel, experiment=experiment, label_policy=label_policy,
+        paper_start=paper_start, paper_end=paper_end,
+    )
+    coverage["research_readiness"] = readiness
     write_coverage(output_dir / "coverage.json", coverage)
     _parquet(output_dir / "monthly_panel.parquet", panel)
     if experiment == "paper":
         _json(output_dir / "paper_descriptives.json", describe_panel(panel))
     if not pilot:
-        reasons = []
+        reasons = list(readiness_reasons)
         if synthetic:
             reasons.append("synthetic source data cannot produce a research backtest")
         if experiment == "paper" and factor_file is None:

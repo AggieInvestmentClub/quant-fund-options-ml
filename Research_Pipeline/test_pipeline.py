@@ -49,6 +49,15 @@ def test_duplicate_contract_day_key_is_rejected(handoff):
         load_handoff(handoff)
 
 
+def test_naive_availability_time_is_rejected(handoff):
+    path = handoff / "options_features.parquet"
+    frame = pd.read_parquet(path)
+    frame["available_at"] = frame.available_at.dt.tz_localize(None)
+    frame.to_parquet(path, index=False)
+    with pytest.raises(ValueError, match="must include a time zone"):
+        load_handoff(handoff)
+
+
 def test_ambiguous_ticker_history_is_rejected(handoff):
     path = handoff / "options_features.parquet"
     frame = pd.read_parquet(path).drop(columns="security_id")
@@ -262,6 +271,15 @@ def test_full_run_requires_ten_years_of_matured_training(tmp_path):
     result = run_pipeline(source, tmp_path / "out", iterations=1)
     assert result["status"] == "blocked_data_gate"
     assert "matured training months" in result["reason"]
+    assert result["coverage"]["research_readiness"]["required_matured_training_months"] == 120
+
+
+def test_paper_gate_reports_missing_historical_window_even_with_other_gaps(handoff, tmp_path):
+    result = run_pipeline(handoff, tmp_path / "paper", experiment="paper", iterations=1)
+    assert result["status"] == "blocked_data_gate"
+    assert "paper window has 17 of 204 labeled test months" in result["reason"]
+    assert "synthetic source data" in result["reason"]
+    assert result["coverage"]["research_readiness"]["labeled_paper_test_months"] == 17
 
 
 def test_no_timely_options_produces_blocked_status(handoff, tmp_path):

@@ -11,6 +11,7 @@ its returns are not research findings.
 Supply Parquet files in one input directory. Dates are calendar dates; every
 `available_at` is a timezone-aware timestamp indicating when that row could
 first have been used. All rows need `source_version` and a stable `security_id`.
+Naive timestamps are rejected rather than interpreted as UTC.
 If only tickers are available, also supply `ticker_history.parquet` with
 `ticker`, `security_id`, `start_date`, and `end_date`; every ticker/date must map
 to exactly one security. Ticker changes alone must not create a new stock.
@@ -72,7 +73,8 @@ python3 -m venv .venv
 
 The full run needs at least 120 **matured** training months before the first
 test month and 24 labeled test months. Otherwise `status.json` says
-`blocked_data_gate`, and `coverage.json` explains what was present. The pilot
+`blocked_data_gate`, and `coverage.json` explains both the historical-window
+shortfall and missing input fields. The pilot
 uses 12 training months and six test months only to verify plumbing; it is
 always marked `engineering_pilot_inconclusive`.
 

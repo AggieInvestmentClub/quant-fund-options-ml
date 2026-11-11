@@ -36,6 +36,11 @@ def _dates(frame: pd.DataFrame, column: str, table: str) -> None:
 def _timestamps(frame: pd.DataFrame, column: str, table: str) -> None:
     if column not in frame:
         raise ValueError(f"{table}: missing {column}")
+    raw = frame[column]
+    if not isinstance(raw.dtype, pd.DatetimeTZDtype):
+        for value in raw.dropna().unique():
+            if pd.Timestamp(value).tzinfo is None:
+                raise ValueError(f"{table}: {column} must include a time zone")
     frame[column] = pd.to_datetime(frame[column], utc=True, errors="raise").astype("datetime64[ns, UTC]")
     if frame[column].isna().any():
         raise ValueError(f"{table}: null {column}")
