@@ -140,8 +140,8 @@ def load_handoff(root: Path) -> dict[str, pd.DataFrame]:
     _unique(members, ["snapshot_date", "security_id"], "sp500_membership")
     if not members.empty and members.groupby("snapshot_date").available_at.nunique().max() != 1:
         raise ValueError("sp500_membership: every row in a snapshot must share available_at")
-    if prices[["close", "adjusted_close", "volume", "market_cap"]].isna().any().any():
-        raise ValueError("stock_prices: prices, volume and market_cap cannot be missing")
+    if prices[["close", "adjusted_close", "volume"]].isna().any().any():
+        raise ValueError("stock_prices: prices and volume cannot be missing")
     if (prices[["close", "adjusted_close", "market_cap"]] < 0).any().any():
         raise ValueError("stock_prices: close, adjusted_close and market_cap cannot be negative")
     if (prices["volume"] < 0).any():

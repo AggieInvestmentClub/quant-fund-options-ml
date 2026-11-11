@@ -134,6 +134,22 @@ def test_wide_adapter_flags_proxies_and_conservative_availability(tmp_path):
                          pilot_train_months=1, pilot_test_months=3, iterations=1)
     assert pilot["status"] == "blocked_data_gate"
     assert (tmp_path / "pilot" / "coverage.json").exists()
+    stocks = tmp_path / "stocks"
+    stocks.mkdir()
+    for ticker in ("AAA", "BBB"):
+        pd.DataFrame({
+            "Date": ["2024-04-30", "2024-05-01", "2024-05-02"],
+            "ticker": ticker, "Close": 10.0, "Adj Close": 10.0,
+            "Volume": 1000,
+        }).to_csv(stocks / f"{ticker}.csv", index=False)
+    supplemented = convert_ben_file(source, tmp_path / "with_stocks", stocks_dir=stocks,
+                                    allow_ticker_proxy=True)
+    assert supplemented["stock_history_rows"] == 6
+    assert supplemented["overlap_close_mismatches"] == 0
+    supplemented_prices = load_handoff(tmp_path / "with_stocks")["stock_prices"]
+    assert len(supplemented_prices) == 6
+    assert supplemented_prices.market_cap.isna().sum() == 2
+    assert supplemented_prices.source_version.str.startswith("stock-csv-manifest-sha256:").all()
 
 
 def test_calculator_reconciliation_catches_one_changed_value(tmp_path):

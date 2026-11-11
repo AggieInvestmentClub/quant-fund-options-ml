@@ -259,18 +259,20 @@ def main() -> int:
     parser.add_argument("--factor-file", type=Path, help="monthly decimal FF5 plus momentum file")
     parser.add_argument("--wide-input", type=Path, help="Ben's ml_dataset_daily.parquet")
     parser.add_argument("--ticker-history", type=Path)
+    parser.add_argument("--stocks-dir", type=Path, help="dated stock history CSVs for labels and trade prices")
     parser.add_argument("--allow-ticker-proxy", action="store_true", help="pilot only; not stable identity")
     parser.add_argument("--pilot-train-months", type=int, default=12)
     parser.add_argument("--pilot-test-months", type=int, default=6)
     parser.add_argument("--max-cores", type=int, default=4, help="maximum 1-4 CPU cores")
     args = parser.parse_args()
+    _limit_cores(args.max_cores)
     if args.synthetic_demo:
         input_dir = args.output_dir / "synthetic_input"
         write_synthetic_handoff(input_dir, n_stocks=40, n_months=60, seed=args.seed)
     elif args.wide_input is not None:
         input_dir = args.output_dir / "adapted_handoff"
         convert_ben_file(args.wide_input, input_dir, ticker_history=args.ticker_history,
-                         allow_ticker_proxy=args.allow_ticker_proxy)
+                         allow_ticker_proxy=args.allow_ticker_proxy, stocks_dir=args.stocks_dir)
     elif args.input_dir is None:
         parser.error("--input-dir is required unless --synthetic-demo is set")
     else:

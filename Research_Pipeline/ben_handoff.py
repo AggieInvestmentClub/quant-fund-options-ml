@@ -7,6 +7,7 @@ import json
 import shutil
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from .data import PAPER_OPTIONS, SKEW_FEATURES, market_close_utc
@@ -20,9 +21,63 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _stock_histories(stocks_dir: Path, raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    files = sorted(Path(stocks_dir).glob("*.csv"))
+    if not files:
+        raise ValueError(f"no stock history CSVs in {stocks_dir}")
+    tickers = set(raw.underlying.astype(str))
+    pieces = []
+    manifest_digest = hashlib.sha256()
+    for path in files:
+        frame = pd.read_csv(path, low_memory=False)
+        required = {"Date", "Close", "Adj Close", "Volume"}
+        if not required.issubset(frame):
+            continue  # Other CSVs can coexist in the stocks directory.
+        if "ticker" not in frame:
+            frame["ticker"] = path.stem
+        frame = frame[frame.ticker.astype(str).isin(tickers)].copy()
+        if frame.empty:
+            continue
+        frame = frame.rename(columns={"Date": "trade_date", "Close": "close",
+                                      "Adj Close": "adjusted_close", "Volume": "volume"})
+        frame = frame[["trade_date", "ticker", "close", "adjusted_close", "volume"]]
+        frame["trade_date"] = pd.to_datetime(frame.trade_date, errors="raise").dt.normalize()
+        for col in ("close", "adjusted_close", "volume"):
+            frame[col] = pd.to_numeric(frame[col], errors="coerce")
+        frame = frame.dropna(subset=["trade_date", "close", "adjusted_close", "volume"])
+        pieces.append(frame)
+        manifest_digest.update(path.name.encode())
+        manifest_digest.update(_sha256(path).encode())
+    if not pieces:
+        raise ValueError("stock history files contain no matching tickers")
+    prices = pd.concat(pieces, ignore_index=True)
+    if prices.duplicated(["trade_date", "ticker"]).any():
+        raise ValueError("duplicate stock/date across stock history CSVs")
+    wide_prices = raw[["trade_date", "underlying", "stock_close", "adj_close", "market_cap"]].rename(
+        columns={"underlying": "ticker"}
+    )
+    overlap = prices.merge(wide_prices, on=["trade_date", "ticker"], how="inner", validate="one_to_one")
+    close_mismatch = (~np.isclose(overlap.close, overlap.stock_close, rtol=1e-5, atol=1e-4,
+                                equal_nan=True)).sum()
+    adjusted_mismatch = (~np.isclose(overlap.adjusted_close, overlap.adj_close,
+                                   rtol=1e-5, atol=1e-4, equal_nan=True)).sum()
+    prices = prices.merge(wide_prices[["trade_date", "ticker", "market_cap"]],
+                          on=["trade_date", "ticker"], how="left", validate="one_to_one")
+    report = {
+        "stock_history_files_used": len(pieces), "stock_history_rows": len(prices),
+        "stock_history_tickers": int(prices.ticker.nunique()),
+        "overlap_stock_price_rows": len(overlap),
+        "overlap_close_mismatches": int(close_mismatch),
+        "overlap_adjusted_close_mismatches": int(adjusted_mismatch),
+        "stock_history_manifest_sha256": manifest_digest.hexdigest(),
+        "market_cap_missing_on_supplemental_days": int(prices.market_cap.isna().sum()),
+    }
+    return prices, report
+
+
 def convert_ben_file(
     source: Path, output_dir: Path, *, ticker_history: Path | None = None,
-    allow_ticker_proxy: bool = False,
+    allow_ticker_proxy: bool = False, stocks_dir: Path | None = None,
 ) -> dict:
     """Write a pilot handoff. Never promote ticker or per-row flags to verified history."""
     source, output_dir = Path(source), Path(output_dir)
@@ -74,17 +129,26 @@ def convert_ben_file(
     # complete membership snapshot for every stock on every historical date.
     if "is_sp500" in raw:
         options["observed_is_sp500"] = raw.is_sp500.astype("boolean")
-    prices = raw[["trade_date", "underlying", "stock_close", "adj_close",
-                  volume_col, "market_cap"]].copy()
-    prices = prices.rename(columns={"underlying": "ticker", "stock_close": "close",
-                                    "adj_close": "adjusted_close", volume_col: "volume"})
-    for col in ("close", "adjusted_close", "volume", "market_cap"):
-        prices[col] = pd.to_numeric(prices[col], errors="coerce")
-    price_missing = int(prices[["close", "adjusted_close", "volume", "market_cap"]].isna().any(axis=1).sum())
-    prices = prices.dropna(subset=["close", "adjusted_close", "volume", "market_cap"]).copy()
+    if stocks_dir is None:
+        prices = raw[["trade_date", "underlying", "stock_close", "adj_close",
+                      volume_col, "market_cap"]].copy()
+        prices = prices.rename(columns={"underlying": "ticker", "stock_close": "close",
+                                        "adj_close": "adjusted_close", volume_col: "volume"})
+        for col in ("close", "adjusted_close", "volume", "market_cap"):
+            prices[col] = pd.to_numeric(prices[col], errors="coerce")
+        price_missing = int(prices[["close", "adjusted_close", "volume", "market_cap"]].isna().any(axis=1).sum())
+        prices = prices.dropna(subset=["close", "adjusted_close", "volume", "market_cap"]).copy()
+        stock_report = {"stock_price_source": "wide_file_only"}
+    else:
+        prices, stock_report = _stock_histories(stocks_dir, raw)
+        stock_report["stock_price_source"] = "dated_stock_history_csvs"
+        price_missing = int(prices[["close", "adjusted_close", "volume"]].isna().any(axis=1).sum())
     close_lookup = {day: market_close_utc(day) for day in prices.trade_date.unique()}
     prices["available_at"] = prices.trade_date.map(close_lookup)
-    prices["source_version"] = f"ben-wide-sha256:{digest}"
+    if stocks_dir is None:
+        prices["source_version"] = f"ben-wide-sha256:{digest}"
+    else:
+        prices["source_version"] = f"stock-csv-manifest-sha256:{stock_report['stock_history_manifest_sha256']}"
     if ticker_history is None:
         options["security_id"] = "ticker_proxy:" + options.ticker.astype(str)
         prices["security_id"] = "ticker_proxy:" + prices.ticker.astype(str)
@@ -106,6 +170,7 @@ def convert_ben_file(
         "us_common_stock_status": "unknown",
         "option_price_basis": "last_trade_not_bid_ask_midpoint",
         "availability_policy": "max(original timestamp, 11:30 America/New_York on tradable_date); assumed for pilot",
+        **stock_report,
     }
     (output_dir / "adapter_report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     return report

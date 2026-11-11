@@ -204,6 +204,7 @@ can be adapted without modifying it:
 ```bash
 .venv/bin/python -m Research_Pipeline.run \
   --wide-input /srv/data/options_model_features/ml_dataset_daily.parquet \
+  --stocks-dir /srv/data/stocks \
   --allow-ticker-proxy --engineering-pilot --iterations 20 \
   --pilot-train-months 3 --pilot-test-months 3 \
   --output-dir /path/to/fresh/scratch/ben_pilot
@@ -218,8 +219,13 @@ stock status unknown. It records how many supplied option availability times
 precede an assumed 11:30 a.m. New York provider-readiness time on the next
 tradable date; that assumption needs upstream publication logs before a live
 trading claim. The wide file uses last-trade option prices, not the paper's
-bid/ask midpoints. Missing stock prices are counted and excluded from the
-canonical price handoff, then coverage and backtest gates expose the impact.
+bid/ask midpoints. `--stocks-dir` uses the dated CSV stock histories for
+entry/exit and 12-month outcome prices, checks overlapping closes against the
+wide file, and preserves each source's hash. Market cap may be null on
+supplemental price dates because it is used only when forming a stock/month
+portfolio; a valid cap is still required on every selected option month-end.
+Without `--stocks-dir`, missing wide-file prices are counted and excluded,
+then coverage and backtest gates expose the impact.
 
 If the upstream calculator's ten `avg_*.csv` files are available, reconcile
 one complete month by stock/date and value before using the wide handoff:
