@@ -23,6 +23,7 @@ from .factors import load_monthly_factors, newey_west_alpha
 from .models import prediction_metrics, train_and_score
 from .monte_carlo import monte_carlo_all
 from .paper import train_paper
+from .paper_descriptives import describe_panel
 from .paper_reference import compare_table_six
 from .synthetic import write_synthetic_handoff
 
@@ -86,6 +87,7 @@ def run_pipeline(
         "predictions.parquet", "prediction_metrics.json", "trades.parquet",
         "monthly_returns.parquet", "portfolio_metrics.json", "monte_carlo.json", "status.json",
         "factor_metrics.json", "paper_comparison.json",
+        "paper_descriptives.json",
     )
     existing = [name for name in expected_outputs if (output_dir / name).exists()]
     if existing:
@@ -108,6 +110,8 @@ def run_pipeline(
     )
     write_coverage(output_dir / "coverage.json", coverage)
     _parquet(output_dir / "monthly_panel.parquet", panel)
+    if experiment == "paper":
+        _json(output_dir / "paper_descriptives.json", describe_panel(panel))
     if not pilot:
         reasons = []
         if synthetic:

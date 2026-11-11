@@ -214,6 +214,8 @@ def build_monthly_panel(
             },
             "feature_nonnull_counts": {col: 0 for col in PAPER_OPTIONS + [c for c in SKEW_FEATURES if c in panel]},
             "first_month": None, "last_month": None,
+            "month_end_rows_by_month": {}, "labeled_rows_by_month": {},
+            "rows_with_all_paper_controls_by_month": {},
             "missing_stock_ids": sorted(set(tables["options_features"].security_id) - set(prices.security_id)),
         }
     controls = controls.rename(columns={"available_at": "controls_available_at", "source_version": "controls_source_version"})
@@ -328,6 +330,14 @@ def build_monthly_panel(
         "feature_nonnull_counts": {col: int(panel[col].notna().sum()) for col in PAPER_OPTIONS + [c for c in SKEW_FEATURES if c in panel]},
         "first_month": str(panel.period.min()) if len(panel) else None,
         "last_month": str(panel.period.max()) if len(panel) else None,
+        "month_end_rows_by_month": {str(month): int(count)
+                                    for month, count in panel.groupby("period").size().items()},
+        "labeled_rows_by_month": {str(month): int(count)
+                                  for month, count in panel[panel.label.notna()].groupby("period").size().items()},
+        "rows_with_all_paper_controls_by_month": {
+            str(month): int(count) for month, count in
+            panel[panel[PAPER_CONTROLS].notna().all(axis=1)].groupby("period").size().items()
+        },
         "missing_stock_ids": sorted(set(tables["options_features"].security_id) - set(prices.security_id)),
     }
     return panel, coverage

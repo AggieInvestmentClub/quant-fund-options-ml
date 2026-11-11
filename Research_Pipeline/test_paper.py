@@ -11,6 +11,7 @@ from Research_Pipeline.data import PAPER_OPTIONS, build_monthly_panel, load_hand
 from Research_Pipeline.factors import FACTOR_COLUMNS, newey_west_alpha
 from Research_Pipeline.paper import normalize_by_month, paper_feature_sets, train_paper
 from Research_Pipeline.paper_reference import compare_table_six
+from Research_Pipeline.paper_descriptives import describe_panel
 from Research_Pipeline.run import run_pipeline
 from Research_Pipeline.reconcile import reconcile_features
 from Research_Pipeline.synthetic import write_synthetic_handoff
@@ -27,6 +28,9 @@ def test_table_three_specifications_and_monthly_normalization(tmp_path):
     root = tmp_path / "input"
     write_synthetic_handoff(root, n_stocks=10, n_months=18, seed=11)
     panel, _ = build_monthly_panel(load_handoff(root))
+    description = describe_panel(panel)
+    assert sum(description["class_counts"].values()) == description["labeled_rows"]
+    assert set(description["raw_option_feature_means_by_future_class"]) <= {"jump", "crash", "normal"}
     normalized = normalize_by_month(panel)
     for _, month in normalized.groupby("period"):
         assert abs(month.avg_call_iv.mean()) < 1e-10

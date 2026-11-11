@@ -173,6 +173,10 @@ when comparing with the paper's reported mean. Reproducing those numbers
 requires comparable option prices, universe, company controls, time window,
 and delisting treatment. A difference is a research finding to investigate,
 not automatically a software bug.
+`paper_descriptives.json` records jump/crash/normal frequencies and raw IV/Greek
+means for a Table 2/4 sanity check, even when the model run is blocked by
+history. `coverage.json` includes month-by-month counts of usable, labeled,
+and fully controlled stock observations.
 
 `prediction_metrics.json` reports one-vs-rest accuracy ratio (`2 × AUC − 1`)
 and precision/FDR among each month's top 5% picks. The paper does not fully
