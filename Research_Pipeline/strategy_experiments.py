@@ -137,6 +137,7 @@ def monte_carlo(prepared,observed,iterations,freq):
     a=np.array(boot)
     return dict(iterations=iterations,seed=SEED,invalid_null_draws=invalid,
         status='complete' if invalid==0 else 'inconclusive: random portfolios have missing prices or insolvency',
+        null_mean_returns=null,bootstrap_metrics=a.tolist(),
         p_raw=(1+int(np.sum(np.array(null)>=r.mean())))/(iterations+1) if invalid==0 else None,
         null_mean_return_95pct=np.quantile(null,[.025,.975]).tolist() if null else None,
         mean_return_95pct=np.quantile(a[:,0],[.025,.975]).tolist(),annualized_return_95pct=np.quantile(a[:,1],[.025,.975]).tolist(),
@@ -196,12 +197,22 @@ def evaluate(predictions,prices,out,iterations,weekly):
             a=ret[ret.variant.eq('combined/ridge')].rename(columns={'net_return':'gross_return'});b=ret[ret.variant.eq('stock_only/ridge')].rename(columns={'net_return':'gross_return'})
             dump(out/'incremental_options_value.json',newey_west_paired_mean(a,b,lags=4))
     dump(out/'metrics.json',reports);dump(out/'monte_carlo.json',sims)
+    if sims:
+        import matplotlib;matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        fig,ax=plt.subplots(figsize=(10,5))
+        for variant,simulation in sims.items():
+            if simulation['null_mean_returns']:
+                ax.hist(simulation['null_mean_returns'],bins=35,alpha=.35,label=variant)
+                ax.axvline(reports[variant]['primary']['mean_periodic_return'],linestyle='--')
+        ax.set_xlabel('Randomized mean net period return; dashed = observed');ax.legend(fontsize=7)
+        fig.tight_layout();fig.savefig(out/'monte_carlo_distribution.png');plt.close(fig)
     status=('diagnostic_complete' if not weekly else 'strategy_not_supported') if sum('primary'in x for x in reports.values())==family else 'inconclusive_incomplete_variants'
     if weekly and 'primary' in reports.get('combined/ridge',{}) and 'primary' in reports.get('stock_only/ridge',{}):
         m=reports['combined/ridge']['primary'];s=sims['combined/ridge'];base=reports['stock_only/ridge']['primary']
         gates=dict(positive_net=m['cumulative_return']>0,sharpe_at_least_one=m['sharpe'] is not None and m['sharpe']>=1,drawdown_limit=m['max_drawdown']>=-.2,beats_stock_only=m['mean_periodic_return']>base['mean_periodic_return'],randomization=s['p_adjusted'] is not None and s['p_adjusted']<.05,bootstrap=s['mean_return_95pct'][0]>0)
         dump(out/'success_gates.json',gates)
-        if all(gates.values()):status='promising_pilot'
+        if all(gates.values()) and sum('primary'in x for x in reports.values())==family:status='promising_pilot'
     dump(out/'status.json',dict(status=status,complete_variants=sum('primary'in x for x in reports.values()),expected_variants=family,claims='limited paper-method diagnostic' if not weekly else 'preliminary weekly strategy on covered ticker universe'))
     (out/'REPORT.md').write_text('# '+('Weekly strategy' if weekly else 'Limited paper-method diagnostic')+'\n\nStatus: **'+status+'**.\n\n'+ '\n'.join(f'- {v}: '+(f"net cumulative {x['primary']['cumulative_return']:.2%}; Sharpe {x['primary']['sharpe']}; daily drawdown {x['primary']['max_drawdown']:.2%}" if 'primary'in x else str(x)) for v,x in reports.items())+'\n\nSee training_windows.json, metrics.json, monte_carlo.json, and dated Parquet outputs. Ticker identities, delistings, historical membership, last-trade IV, publication time and borrow availability remain limitations.\n')
 
