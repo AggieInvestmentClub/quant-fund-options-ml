@@ -17,6 +17,8 @@ def test_daily_ledger_self_financing_costs_and_drift():
     assert np.prod(1+r['periodic'].net_return)==pytest.approx(r['final_equity'])
     net=ledger(p);assert net['final_equity']<r['final_equity']
     assert net['total_transaction_cost']>0
+    assert net['daily'].transaction_cost.sum()==pytest.approx(net['total_transaction_cost'])
+    assert net['daily'].borrow_cost.sum()==pytest.approx(net['total_borrow'])
     assert np.allclose(net['daily'].equity,net['daily'].cash+net['daily'].position_value)
     assert ledger(p,capture=False)['final_equity']==pytest.approx(net['final_equity'])
 

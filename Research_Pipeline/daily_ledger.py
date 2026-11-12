@@ -50,7 +50,9 @@ def ledger(periods, *, bps=30, borrow=.03, rng=None, capture=True):
         w=select_weights(scores,caps,ids,crash); ix=np.flatnonzero(w); selected=set(ids[ix])
         path=p['prices'][:,ix]; dates=p['days']
         if not np.isfinite(path).all() or (path[0]<=0).any() or (path<0).any():
-            raise InvalidPortfolio(f"missing/invalid selected daily price in {p['period']}")
+            bad=(~np.isfinite(path))|(path<0); bad[0]|=path[0]<=0
+            examples=[dict(security_id=str(ids[ix[j]]),date=str(dates[i].date())) for i,j in zip(*np.where(bad))][:8]
+            raise InvalidPortfolio(f"missing/invalid selected daily price in {p['period']}: {examples}")
         marks=p['marks']; old={}
         for sid,units in held.items():
             if sid not in marks or not np.isfinite(marks[sid]):
@@ -92,7 +94,7 @@ def ledger(periods, *, bps=30, borrow=.03, rng=None, capture=True):
             long_return=float(np.sum(w[ix][w[ix]>0]*(path[-1,w[ix]>0]/path[0,w[ix]>0]-1))),
             short_return=float(np.sum(w[ix][w[ix]<0]*(path[-1,w[ix]<0]/path[0,w[ix]<0]-1)))))
     daily=pd.DataFrame(records)
-    if capture: daily=daily.drop_duplicates('date',keep='last').sort_values('date')
+    if capture: daily=daily.groupby('date',as_index=False).agg(equity=('equity','last'),cash=('cash','last'),position_value=('position_value','last'),transaction_cost=('transaction_cost','sum'),borrow_cost=('borrow_cost','sum')).sort_values('date')
     return dict(final_equity=nav,total_transaction_cost=total_cost,total_borrow=total_borrow,total_turnover=turnover,
                 periodic=pd.DataFrame(returns),daily=daily,holdings=pd.DataFrame(holdings))
 

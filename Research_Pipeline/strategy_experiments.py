@@ -139,6 +139,7 @@ def monte_carlo(prepared,observed,iterations,freq):
         status='complete' if invalid==0 else 'inconclusive: random portfolios have missing prices or insolvency',
         null_mean_returns=null,bootstrap_metrics=a.tolist(),
         p_raw=(1+int(np.sum(np.array(null)>=r.mean())))/(iterations+1) if invalid==0 else None,
+        p_bounds=[(1+int(np.sum(np.array(null)>=r.mean())))/(iterations+1),(1+int(np.sum(np.array(null)>=r.mean()))+invalid)/(iterations+1)],
         null_mean_return_95pct=np.quantile(null,[.025,.975]).tolist() if null else None,
         mean_return_95pct=np.quantile(a[:,0],[.025,.975]).tolist(),annualized_return_95pct=np.quantile(a[:,1],[.025,.975]).tolist(),
         sharpe_95pct=np.nanquantile(a[:,2],[.025,.975]).tolist(),block_periods=block,
