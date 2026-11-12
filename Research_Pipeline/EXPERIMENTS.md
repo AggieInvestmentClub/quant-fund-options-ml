@@ -51,3 +51,15 @@ python -m Research_Pipeline.strategy_experiments score \
 ```
 
 Only load model artifacts created by this project in trusted private storage. Scores are research outputs; no orders are submitted. Ticker proxies, unavailable delisting outcomes, last-trade IV, incomplete historical membership and unknown borrow availability limit claims to the covered-stock universe.
+
+## Final audit when valuation gaps remain
+
+After a completed run, reconcile the saved models and ledger and create `FINAL_REPORT.md`:
+
+```bash
+python -m Research_Pipeline.final_report \
+  --results /private/path/results \
+  --prices /private/path/results/handoff/stock_prices.parquet
+```
+
+This verifies unchanged equity/performance, fee/cash reconciliation and model-score round trips. It lists exact missing prices, retains the invalid primary strategy, and gives conservative p-value bounds for incomplete randomizations. Original model-run files remain intact; corrected daily fee-event logs and verification hashes are in `final_audit/`. Run this once per result directory. Unresolved outcomes remain unavailable; the audit never drops affected holdings or fabricates a terminal value.

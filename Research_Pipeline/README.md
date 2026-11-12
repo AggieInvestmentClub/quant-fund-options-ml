@@ -1,5 +1,9 @@
 # Options research pipeline
 
+For the current existing-data monthly diagnostic and weekly strategy, see
+[the experiment runbook](EXPERIMENTS.md). It includes frozen inputs, daily accounting,
+seven weekly comparisons, 2,000-draw Monte Carlo checks, and final audit commands.
+
 This is the **downstream research layer**. It takes dated IV/Greek features from
 the calculator, joins stock data, constructs the paper's 12-month jump/crash
 labels, trains models in chronological order, backtests monthly portfolios, and
