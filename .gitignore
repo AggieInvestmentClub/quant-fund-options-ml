@@ -21,3 +21,8 @@ raw stocks archive/
 
 # Local cron logs
 logs/
+
+# Private research replays, fitted models, and market-data handoffs
+research_results/
+private_inputs/
+*.joblib

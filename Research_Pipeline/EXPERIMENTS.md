@@ -76,3 +76,7 @@ python -m Research_Pipeline.price_stress \
 ```
 
 The five scenarios apply -25%, -10%, 0%, +10%, or +25% to each missing run relative to its last observed adjusted close, jumping on the first missing session and staying flat until an observed price resumes or the assumed exit. Recorded prices, predictions, rankings, weights, and the original report remain unchanged. A selected missing entry close is prohibited; liquidation at an assumed exit is explicitly hypothetical. Costs and borrow use the original ledger. The output includes all strategies, assumed price cells, affected positions, scenario equity curves and verification checks. These are conditional outcomes, not historical corrections, probability estimates, recovered alpha, or validated backtests. No model fitting or new market data is involved.
+
+## Portfolio and cost revision
+
+For the frozen-prediction four-condition comparison, equal weights/5% target caps, current IBKR commission scenario, $100,000 baseline, mandatory paired gross/net simulations and account-size sensitivities, see [PORTFOLIO_REVISION.md](PORTFOLIO_REVISION.md). Original results remain immutable; revised reports are exploratory.

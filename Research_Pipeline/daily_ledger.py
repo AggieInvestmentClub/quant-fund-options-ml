@@ -7,14 +7,14 @@ import pandas as pd
 class InvalidPortfolio(ValueError):
     pass
 
-def select_weights(scores, caps, ids, crash=None):
+def select_weights(scores, caps, ids, crash=None, portfolio=None):
     n=max(1,math.ceil(len(ids)*.05))
     if len(ids)<2*n:
         raise InvalidPortfolio('universe too small for two disjoint sides')
     lo=np.lexsort((ids,-scores)); so=np.lexsort((ids, scores if crash is None else -crash))
     longs=set(lo[:n]); shorts=set(so[:n])
     for i in longs & shorts:
-        if scores[i]>=crash[i]: shorts.remove(i)
+        if crash is None or scores[i]>=crash[i]: shorts.remove(i)
         else: longs.remove(i)
     for order,side,other in ((lo,longs,shorts),(so,shorts,longs)):
         for i in order:
@@ -22,7 +22,11 @@ def select_weights(scores, caps, ids, crash=None):
             if i not in side|other: side.add(i)
     w=np.zeros(len(ids))
     for side,sign in ((longs,1),(shorts,-1)):
-        ix=np.array(sorted(side)); w[ix]=sign*caps[ix]/caps[ix].sum()
+        ix=np.array(sorted(side))
+        if portfolio is not None and portfolio.weighting=='equal':
+            w[ix]=sign*min(1/len(ix),portfolio.max_position)
+        else:
+            w[ix]=sign*caps[ix]/caps[ix].sum()
     return w
 
 def prepare(predictions, prices):
@@ -39,7 +43,18 @@ def prepare(predictions, prices):
             bins=np.array_split(np.argsort(f.market_cap.to_numpy(),kind='stable'),min(10,len(f)))))
     return result
 
-def ledger(periods, *, bps=30, borrow=.03, rng=None, capture=True):
+def ledger(periods, *, bps=30, borrow=.03, rng=None, capture=True,
+           portfolio=None, costs=None, initial_capital=None):
+    # The no-configuration path remains the historical implementation.
+    if portfolio is not None or costs is not None or initial_capital is not None:
+        from .portfolio_ledger import replay_ledger, PortfolioSpec, CostSpec
+        return replay_ledger(periods, portfolio=portfolio or PortfolioSpec(),
+            costs=costs or CostSpec(flat_bps=bps,borrow_rate=borrow),
+            initial_capital=1. if initial_capital is None else initial_capital,
+            rng=rng,capture=capture)
+    return _legacy_ledger(periods,bps=bps,borrow=borrow,rng=rng,capture=capture)
+
+def _legacy_ledger(periods, *, bps=30, borrow=.03, rng=None, capture=True):
     nav=1.; cash=1.; held={}; records=[]; returns=[]; holdings=[]; total_cost=total_borrow=turnover=0.
     for pi,p in enumerate(periods):
         ids,caps=p['ids'],p['caps']; scores=p['score'].copy(); crash=None if p['crash'] is None else p['crash'].copy()
@@ -99,11 +114,12 @@ def ledger(periods, *, bps=30, borrow=.03, rng=None, capture=True):
                 periodic=pd.DataFrame(returns),daily=daily,holdings=pd.DataFrame(holdings))
 
 def metrics(run, frequency):
-    r=run['periodic'].net_return.to_numpy(); daily=run['daily']; wealth=np.r_[1.,daily.equity.to_numpy()]
+    capital=run.get('initial_capital',1.)
+    r=run['periodic'].net_return.to_numpy(); daily=run['daily']; wealth=np.r_[capital,daily.equity.to_numpy()]
     elapsed=(daily.date.iloc[-1]-daily.date.iloc[0]).days
     sd=np.std(r,ddof=1)
-    return dict(periods=len(r),cumulative_return=run['final_equity']-1,
-        annualized_return=run['final_equity']**(365/max(1,elapsed))-1,
+    return dict(periods=len(r),cumulative_return=run['final_equity']/capital-1,
+        annualized_return=(run['final_equity']/capital)**(365/max(1,elapsed))-1,
         sharpe=float(np.mean(r)/sd*np.sqrt(frequency)) if sd else None,
         annualized_volatility=float(sd*np.sqrt(frequency)),mean_periodic_return=float(r.mean()),
         max_drawdown=float(np.min(wealth/np.maximum.accumulate(wealth)-1)),hit_rate=float(np.mean(r>0)),
