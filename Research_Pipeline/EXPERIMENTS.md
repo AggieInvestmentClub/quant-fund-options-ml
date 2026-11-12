@@ -63,3 +63,16 @@ python -m Research_Pipeline.final_report \
 ```
 
 This verifies unchanged equity/performance, fee/cash reconciliation and model-score round trips. It lists exact missing prices, retains the invalid primary strategy, and gives conservative p-value bounds for incomplete randomizations. Original model-run files remain intact; corrected daily fee-event logs and verification hashes are in `final_audit/`. Run this once per result directory. Unresolved outcomes remain unavailable; the audit never drops affected holdings or fabricates a terminal value.
+
+## Conditional missing-price stress test
+
+Use saved predictions and the exact original adapted-price hash:
+
+```bash
+python -m Research_Pipeline.price_stress \
+  --results /private/path/results \
+  --prices /private/path/results/handoff/stock_prices.parquet \
+  --output-dir /private/path/results/price_stress
+```
+
+The five scenarios apply -25%, -10%, 0%, +10%, or +25% to each missing run relative to its last observed adjusted close, jumping on the first missing session and staying flat until an observed price resumes or the assumed exit. Recorded prices, predictions, rankings, weights, and the original report remain unchanged. A selected missing entry close is prohibited; liquidation at an assumed exit is explicitly hypothetical. Costs and borrow use the original ledger. The output includes all strategies, assumed price cells, affected positions, scenario equity curves and verification checks. These are conditional outcomes, not historical corrections, probability estimates, recovered alpha, or validated backtests. No model fitting or new market data is involved.
