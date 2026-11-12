@@ -80,3 +80,7 @@ The five scenarios apply -25%, -10%, 0%, +10%, or +25% to each missing run relat
 ## Portfolio and cost revision
 
 For the frozen-prediction four-condition comparison, equal weights/5% target caps, current IBKR commission scenario, $100,000 baseline, mandatory paired gross/net simulations and account-size sensitivities, see [PORTFOLIO_REVISION.md](PORTFOLIO_REVISION.md). Original results remain immutable; revised reports are exploratory.
+
+## Weekly feature ablation
+
+[FEATURE_EXPERIMENT.md](FEATURE_EXPERIMENT.md) specifies the fixed full/compact/alternative input comparison, control prediction reproduction, 52-week earlier assessment, 26-week exploratory comparison and eight-variant ranking/portfolio inference. It retrains models but leaves the monthly paper reference unchanged.
