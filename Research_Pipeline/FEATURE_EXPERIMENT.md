@@ -61,3 +61,9 @@ python -m pytest -q Research_Pipeline
 ```
 
 Tests cover exact lags, holidays/missing weeks/security separation, future-input/label exclusion, strict maturity, fixed feature counts, all-missing features and training-only preprocessing, control-score reproduction, shared keys/outcome masks, deterministic paired simulations and a synthetic fit-to-ledger-to-inference run. Existing portfolio and source-mutation checks remain in force.
+
+### Coverage gaps and safe fit reuse
+
+Every scheduled nonempty stock-week is predicted even when its universe has fewer than 200 names. Ranking/MSE/quintile statistics remain unavailable below 200 known outcomes, and a one-stock universe cannot form two disjoint portfolio sides. In the frozen earlier assessment, April 2 and April 10, 2026 each have one eligible stock. Retain both weeks: report 50 estimable ranking weeks out of 52, with 11 rather than 13 in the last block. Do not invent rows or bridge the gap. The complete 52-week improvement screen cannot pass with unavailable scoring weeks; partial point estimates remain descriptive.
+
+A restart can use `--fit-cache /private/trusted-prior-attempt` in addition to a **fresh** output directory. Only use this project's own trusted artifacts. The prior manifest must match input hashes, feature definitions, software and seed; each model must match feature order, training metadata and estimator/preprocessor parameters. Reused models are re-scored, copied to the new result directory with fit provenance, and controls still pass the full original-prediction reproduction gate. Cache reuse does not skip test weeks, alter training data or change model settings.

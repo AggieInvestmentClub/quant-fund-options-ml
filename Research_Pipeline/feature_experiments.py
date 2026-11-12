@@ -82,13 +82,13 @@ def training(panel,decision):
     return f
 
 
-def fit_scores(panel,schedule,variants,out,source_hashes):
+def fit_scores(panel,schedule,variants,out,source_hashes,cache_dir=None,cache_commit=None):
     frames=[];windows=[];out=Path(out);(out/'models').mkdir(parents=True,exist_ok=True)
     diagnostics=out/'training_diagnostics';diagnostics.mkdir(exist_ok=True)
     union=list(dict.fromkeys(GROUPS['full']+GROUPS['compact_plus']))
     for n,row in enumerate(schedule.itertuples(index=False)):
         tr=training(panel,row.decision_at);f=panel[panel.period.eq(row.period)]
-        if len(f)<200:raise ValueError('fewer than 200 eligible stocks')
+        if f.empty:raise ValueError('empty scheduled prediction week')
         window=dict(period=row.period,decision_at=row.decision_at,training_weeks=tr.period.nunique(),training_rows=len(tr),
                     first_signal=tr.trade_date.min(),last_signal=tr.trade_date.max(),latest_outcome=tr.label_available_at.max())
         windows.append(window);key=row.period.replace('/','_')
@@ -101,14 +101,27 @@ def fit_scores(panel,schedule,variants,out,source_hashes):
                  interpretation='training window only, before imputation; pairwise counts differ; no automatic selection'))
         for variant in variants:
             group,kind=variant.split('/');cols=GROUPS[group]
-            model=pipeline(kind).fit(tr[cols],tr.target)
+            filename=f'{key}_{group}_{kind}.joblib';cached=Path(cache_dir)/'models'/filename if cache_dir else None
+            if cached is not None and cached.exists():
+                artifact=joblib.load(cached)
+                if artifact['features']!=cols or artifact['definitions']!=DEFINITIONS or artifact['source_hashes']!=source_hashes or artifact['training']!=window:
+                    raise ValueError('fit cache metadata mismatch: '+filename)
+                expected=pipeline(kind)
+                for (name,step),(expected_name,expected_step) in zip(artifact['model'].steps,expected.steps):
+                    params=json.dumps(step.get_params(),sort_keys=True,default=str)
+                    expected_params=json.dumps(expected_step.get_params(),sort_keys=True,default=str)
+                    if name!=expected_name or type(step)!=type(expected_step) or params!=expected_params:
+                        raise ValueError('fit cache model/preprocessing parameters differ: '+filename)
+                model=artifact['model'];fit_origin=cache_commit
+            else:
+                model=pipeline(kind).fit(tr[cols],tr.target);fit_origin='current run'
             pred=f[['period','security_id','market_cap','trade_date','entry_date','exit_date','target']].copy()
             pred['score']=model.predict(f[cols]);pred['variant']=variant
             if not np.isfinite(pred.score).all():raise ValueError('nonfinite prediction')
             frames.append(pred)
             joblib.dump(dict(model=model,features=cols,definitions=DEFINITIONS,training=window,
                 source_hashes=source_hashes,target='next scheduled entry-to-exit adjusted stock return',
-                schema_version=1,feature_group=group),out/'models'/f'{key}_{group}_{kind}.joblib')
+                schema_version=1,feature_group=group,fit_origin=fit_origin),out/'models'/filename)
         print(f'fit {out.name} week {n+1}/{len(schedule)} ({len(variants)} variants)',flush=True)
     return pd.concat(frames,ignore_index=True),windows
 
@@ -196,7 +209,8 @@ def paired_statistics(pm):
     for kind in ['ridge','lightgbm']:
         pairs=[('compact','full'),('compact_plus','compact'),('compact_plus','full')]+[(g,'stock_only') for g in ['full','compact','compact_plus']]
         for a,b in pairs:
-            diff=pivot[a+'/'+kind]-pivot[b+'/'+kind];out[a+'/'+kind+' minus '+b+'/'+kind]=dict(mean_ic_difference=float(diff.mean()),weekly=diff.to_dict())
+            diff=pivot[a+'/'+kind]-pivot[b+'/'+kind];out[a+'/'+kind+' minus '+b+'/'+kind]=dict(mean_ic_difference=float(diff.mean()),
+                scoring_weeks=int(diff.notna().sum()),scheduled_weeks=len(diff),weekly=diff.to_dict())
     return out
 
 
@@ -277,7 +291,7 @@ def simulations(pred,prepared,observed,pm,out,iterations=2000,seed=SEED,min_know
     return reports,primary_ci
 
 
-def run(panel_path,prices_path,reference_root,out,max_cores=4,iterations=2000):
+def run(panel_path,prices_path,reference_root,out,max_cores=4,iterations=2000,fit_cache=None):
     _limit_cores(max_cores);out=Path(out);reference_root=Path(reference_root)
     if out.exists():raise FileExistsError('fresh output directory required')
     if iterations<1:raise ValueError('iterations must be positive')
@@ -286,21 +300,28 @@ def run(panel_path,prices_path,reference_root,out,max_cores=4,iterations=2000):
     for p,k in zip(sources,['weekly/weekly_panel.parquet','handoff/stock_prices.parquet','weekly/predictions.parquet']):
         if hashes[str(p)]!=expected[k]:raise ValueError('frozen source mismatch: '+k)
     panel=features(pd.read_parquet(panel_path));prices=pd.read_parquet(prices_path);reference=pd.read_parquet(sources[-1]);schedule=schedules(panel)
+    software={p:version(p) for p in ['numpy','pandas','scikit-learn','lightgbm','exchange-calendars']}
+    cache_commit=None
+    if fit_cache:
+        fit_cache=Path(fit_cache);cache_manifest=json.loads((fit_cache/'manifest.json').read_text())
+        for key,value in [('source_hashes',hashes),('groups',GROUPS),('definitions',DEFINITIONS),('software',software),('seed',SEED)]:
+            if cache_manifest[key]!=value:raise ValueError('fit cache manifest mismatch: '+key)
+        cache_commit=cache_manifest['code_commit']
     out.mkdir(parents=True);manifest=dict(code_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
         source_hashes=hashes,groups=GROUPS,definitions=DEFINITIONS,seed=SEED,iterations=iterations,max_cores=max_cores,
-        software={p:version(p) for p in ['numpy','pandas','scikit-learn','lightgbm','exchange-calendars']},
+        software=software,fit_cache_source=str(fit_cache) if fit_cache else None,fit_cache_commit=cache_commit,
         primary_challenger=PRIMARY,reference=REFERENCE,original_primary='combined/ridge',
         portfolio=asdict(PortfolioSpec('equal')),costs=asdict(CostSpec(mode='ibkr_fixed',execution_bps=1)),initial_capital=100000.,
         status='exploratory retrospective feature experiment; monthly paper diagnostic unchanged; no new data or tuning')
     dump(out/'manifest.json',manifest);dump(out/'split_schedule.json',{k:v.to_dict('records') for k,v in schedule.items()})
     controls=[v for v in VARIANTS if v.split('/')[0]in ['stock_only','full']]
-    control,windows=fit_scores(panel,schedule['historical'],controls,out/'historical',hashes)
+    control,windows=fit_scores(panel,schedule['historical'],controls,out/'historical',hashes,fit_cache/'historical' if fit_cache else None,cache_commit)
     checks=reproduce(control,reference);dump(out/'control_reproduction.json',checks)
     print('All four controls reproduced within 1e-8',flush=True)
     other=[v for v in VARIANTS if v not in controls]
-    extra,_=fit_scores(panel,schedule['historical'],other,out/'historical',hashes)
+    extra,_=fit_scores(panel,schedule['historical'],other,out/'historical',hashes,fit_cache/'historical' if fit_cache else None,cache_commit)
     historical=pd.concat([control,extra],ignore_index=True)
-    earlier,earlier_windows=fit_scores(panel,schedule['assessment'],VARIANTS,out/'assessment',hashes)
+    earlier,earlier_windows=fit_scores(panel,schedule['assessment'],VARIANTS,out/'assessment',hashes,fit_cache/'assessment' if fit_cache else None,cache_commit)
     outputs={};runs={};rankings={};prepareds={}
     for name,pred in [('assessment',earlier),('historical',historical)]:
         dest=out/name;wanted=panel[panel.period.isin(schedule[name].period)]
@@ -310,19 +331,23 @@ def run(panel_path,prices_path,reference_root,out,max_cores=4,iterations=2000):
         reports,observed,prepared,pm=predict_and_evaluate(pred,prices,dest)
         if name=='assessment':
             pm=pm.merge(schedule[name][['period']].assign(block=np.arange(52)//13+1),on='period',validate='many_to_one')
-            pm.groupby(['variant','block']).agg(mean_ic=('rank_ic','mean'),mean_mse=('mse','mean'),mean_quintile_spread=('quintile_spread','mean')).reset_index().to_csv(dest/'block_metrics.csv',index=False)
+            pm.groupby(['variant','block']).agg(mean_ic=('rank_ic','mean'),scoring_weeks=('rank_ic','count'),scheduled_weeks=('period','size'),mean_mse=('mse','mean'),mean_quintile_spread=('quintile_spread','mean')).reset_index().to_csv(dest/'block_metrics.csv',index=False)
         dump(dest/'paired_ic_differences.json',paired_statistics(pm))
         outputs[name]=reports;runs[name]=observed;rankings[name]=pm;prepareds[name]=prepared
     sims,ci=simulations(historical,prepareds['historical'],runs['historical'],rankings['historical'],out/'historical',iterations,SEED)
-    earlier_delta=outputs['assessment'][PRIMARY]['mean_ic']-outputs['assessment'][REFERENCE]['mean_ic']
     block=rankings['assessment'].pivot(index=['block','period'],columns='variant',values='rank_ic')
-    diffs=(block[PRIMARY]-block[REFERENCE]).groupby('block').mean()
-    gates=dict(assessment_ic_improves=earlier_delta>0,at_least_three_blocks_improve=int(diffs.gt(0).sum())>=3,
+    paired=block[PRIMARY]-block[REFERENCE];earlier_delta=float(paired.mean());diffs=paired.groupby('block').mean()
+    complete_blocks=paired.notna().groupby('block').sum().eq(13)
+    gates=dict(assessment_ic_improves=paired.notna().all() and earlier_delta>0,
+        at_least_three_blocks_improve=int((diffs.gt(0)&complete_blocks).sum())>=3,
         historical_positive_ic=outputs['historical'][PRIMARY]['mean_ic']>0,
         paired_bootstrap_above_zero=ci is not None and ci[0]>0,
         adjusted_ranking_p_below_005=sims[PRIMARY]['ranking_p_adjusted'] is not None and sims[PRIMARY]['ranking_p_adjusted']<.05)
     dump(out/'success_gates.json',dict(gates=gates,all_pass=all(gates.values()),assessment_ic_difference=earlier_delta,
-        block_differences=diffs.to_dict(),conclusion='promising for further prediction research' if all(gates.values()) else 'primary challenger not supported by the declared research screens',
+        assessment_scoring_weeks=int(paired.notna().sum()),assessment_scheduled_weeks=len(paired),
+        block_differences=diffs.to_dict(),block_complete=complete_blocks.to_dict(),
+        assessment_coverage_note='Under-200 weeks remain in predictions; no ranking statistic is reported. A complete 52-week improvement screen cannot pass with unavailable weeks.',
+        conclusion='promising for further prediction research' if all(gates.values()) else 'primary challenger not supported by the declared research screens',
         limitation='exploratory; not proof of profitability, fresh independent evidence, or paper replication'))
     for p,digest in hashes.items():assert sha(p)==digest,'input mutated'
     dump(out/'source_verification.json',dict(hashes_unchanged=True,monthly_reference_untouched=True))
@@ -339,6 +364,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--panel',required=True);p.add_argument('--prices',required=True)
     p.add_argument('--reference-results',required=True);p.add_argument('--output-dir',required=True);p.add_argument('--max-cores',type=int,default=4)
     p.add_argument('--iterations',type=int,default=2000,help='2000 for declared research; smaller counts are engineering pilots only')
-    a=p.parse_args();run(a.panel,a.prices,a.reference_results,a.output_dir,a.max_cores,a.iterations)
+    p.add_argument('--fit-cache',help='optional trusted prior fit directory; inputs, features, software, seed and training metadata must match')
+    a=p.parse_args();run(a.panel,a.prices,a.reference_results,a.output_dir,a.max_cores,a.iterations,a.fit_cache)
 
 if __name__=='__main__':main()

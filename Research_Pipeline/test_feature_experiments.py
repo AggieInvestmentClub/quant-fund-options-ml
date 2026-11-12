@@ -83,7 +83,7 @@ def test_known_outcome_masks_and_quintile_ties():
     with pytest.raises(AssertionError):assert_common_keys(pd.concat([p,bad],ignore_index=True),p)
 
 
-def test_fit_preprocessing_schema_and_control_roundtrip(tmp_path):
+def test_fit_preprocessing_schema_and_control_roundtrip(tmp_path,monkeypatch):
     p=features(panel_fixture());p['atm_term_slope']=np.nan
     s=p[['period','trade_date','decision_at','entry_date','exit_date','label_available_at']].drop_duplicates().iloc[-1:]
     pred,windows=fit_scores(p,s,['stock_only/ridge','full/ridge'],tmp_path,{'fixture':'frozen'})
@@ -98,6 +98,24 @@ def test_fit_preprocessing_schema_and_control_roundtrip(tmp_path):
     assert imputer.statistics_[0]==pytest.approx(tr[GROUPS['full'][0]].median())
     assert len(pred)==440 and len(windows)==1
     assert windows[0]['latest_outcome']<windows[0]['decision_at']
+    from sklearn.pipeline import Pipeline
+    def fail_fit(*args,**kwargs):raise AssertionError('verified cache must not fit again')
+    monkeypatch.setattr(Pipeline,'fit',fail_fit)
+    reused,_=fit_scores(p,s,['stock_only/ridge','full/ridge'],tmp_path/'reused',{'fixture':'frozen'},tmp_path,'cached-commit')
+    pd.testing.assert_frame_equal(pred,reused)
+    artifact['model'].steps[-1][1].set_params(alpha=11)
+    joblib.dump(artifact,next((tmp_path/'models').glob('*full_ridge.joblib')))
+    with pytest.raises(ValueError,match='parameters differ'):
+        fit_scores(p,s,['full/ridge'],tmp_path/'bad_cache',{'fixture':'frozen'},tmp_path,'cached-commit')
+
+
+def test_undercovered_week_is_predicted_and_statistics_unavailable(tmp_path):
+    p=panel_fixture();last=p.trade_date.max();p=p[~p.trade_date.eq(last)|p.security_id.eq('S000')]
+    p=features(p);sched=p[p.trade_date.eq(last)][['period','trade_date','decision_at','entry_date','exit_date','label_available_at']].drop_duplicates()
+    pred,_=fit_scores(p,sched,['full/ridge'],tmp_path,{'fixture':'frozen'})
+    assert len(pred)==1 and np.isfinite(pred.score).all()
+    m=prediction_metrics(pred);assert m.known_outcomes.iloc[0]==1
+    assert pd.isna(m.rank_ic.iloc[0]) and pd.isna(m.mse.iloc[0]) and pd.isna(m.quintile_spread.iloc[0])
 
 
 def test_synthetic_feature_pipeline_backtest_and_paired_inference(tmp_path):
