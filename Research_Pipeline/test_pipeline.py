@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from Research_Pipeline.backtest import _positions, attach_forward_trade_returns, backtest_one
+from Research_Pipeline.backtest import _positions, attach_forward_trade_returns, backtest_all, backtest_one
 from Research_Pipeline.data import build_monthly_panel, load_handoff, market_close_utc
 from Research_Pipeline.models import _training_rows, prediction_metrics
 from Research_Pipeline.monte_carlo import (
@@ -152,10 +152,51 @@ def test_portfolio_weights_returns_and_transaction_costs():
     assert monthly.long_return.iloc[0] == pytest.approx(0.1)
     assert monthly.crash_stock_return.iloc[0] == pytest.approx(-0.1)
     assert monthly.transaction_cost.iloc[0] == pytest.approx(0.006)
-    assert monthly.transaction_cost.iloc[1] == pytest.approx(0)
-    assert monthly.transaction_cost.iloc[-1] == pytest.approx(0.006)
+    # The names do not change, but price drift still requires a rebalance trade.
+    assert monthly.transaction_cost.iloc[1] == pytest.approx(0.001)
+    assert monthly.transaction_cost.iloc[-1] == pytest.approx(0.006473684210526315)
     assert monthly.net_return_0pct_borrow.iloc[0] == pytest.approx(0.194)
     assert monthly.net_return_3pct_borrow.iloc[0] == pytest.approx(0.1915)
+
+
+def test_insolvent_short_portfolio_stops_instead_of_compounding_negative_wealth():
+    predictions = _predictions_for_backtest()
+    first_short = predictions.period.eq(pd.Period("2020-01")) & predictions.security_id.eq("S1")
+    predictions.loc[first_short, "stock_return"] = 2.0
+    with pytest.raises(ValueError, match="portfolio equity exhausted"):
+        backtest_one(predictions)
+
+
+def test_insolvent_model_is_reported_without_hiding_other_models():
+    base = _predictions_for_backtest()
+    base.loc[base.period.eq(pd.Period("2020-01")) & base.security_id.eq("S2"), "stock_return"] = 2.0
+    base["rebalance_date"] = base.period.map(lambda period: (period + 1).to_timestamp())
+    base["sp500_member"] = True
+    base["feature_set"] = "options_only"
+    good = base.copy()
+    good["model"] = "logistic"
+    bad = base.copy()
+    bad["model"] = "lightgbm"
+    first_bad_short = bad.period.eq(pd.Period("2020-01")) & bad.security_id.eq("S2")
+    bad.loc[first_bad_short, "p_crash"] = 0.99
+    prices = []
+    for security_id, rows in base.groupby("security_id"):
+        price = 100.0
+        for row in rows.sort_values("period").itertuples():
+            prices.append({"trade_date": row.rebalance_date, "security_id": security_id,
+                           "adjusted_close": price})
+            price *= 1 + row.stock_return
+        prices.append({"trade_date": pd.Timestamp("2020-05-01"),
+                       "security_id": security_id, "adjusted_close": price})
+    predictions = pd.concat([good, bad], ignore_index=True)
+    trades, monthly, report = backtest_all(predictions, pd.DataFrame(prices))
+    assert set(trades.model) == {"logistic"}
+    assert set(monthly.model) == {"logistic"}
+    assert report["options_only/lightgbm/full"]["status"] == "insolvent"
+    attached = attach_forward_trade_returns(predictions, pd.DataFrame(prices))
+    simulations = monte_carlo_all(attached, iterations=2)
+    assert simulations["options_only/lightgbm/full"]["status"] == "insolvent"
+    assert simulations["options_only/logistic/full"]["iterations"] == 2
 
 
 def test_only_matured_labels_can_train(handoff):

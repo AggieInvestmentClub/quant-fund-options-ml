@@ -106,7 +106,9 @@ each run; the command refuses to mix new results with old files.
   5% by crash probability. Overlap goes to the higher-probability side. Each
   side is normalized to 100% market-cap weight. The position enters at the
   first close after the option data became available and exits at the next
-  rebalance close. Costs are 30 basis points per traded notional, plus reported
+  rebalance close. Turnover compares new weights with the previous positions
+  after price drift, normalized by gross portfolio value; the final period
+  includes liquidation. Costs are 30 basis points per traded notional, plus reported
   0% and 3% annual short-borrow cases. Missing entry/exit prices fail the run.
 - On the untouched test months, 2,000 probability-pair shuffles within month
   and market-cap decile form a random-signal null. Another 2,000 three-month

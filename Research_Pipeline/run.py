@@ -250,6 +250,12 @@ def run_pipeline(
     _json(output_dir / "prediction_metrics.json", prediction_metrics(predictions))
     _json(output_dir / "portfolio_metrics.json", portfolio_report)
     _json(output_dir / "monte_carlo.json", mc)
+    if monthly.empty:
+        status = {"status": "strategy_insolvent", "synthetic_input": synthetic,
+                  "months_scored": model_report["test_months"], "experiment": experiment,
+                  "feature_model_combinations": len(model_report["candidate_models"])}
+        _json(output_dir / "status.json", status)
+        return status
     if experiment == "paper":
         paired_report = {}
         for (kind, universe), group in monthly.groupby(["model", "universe"]):

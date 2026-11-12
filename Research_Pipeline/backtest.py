@@ -7,6 +7,10 @@ import math
 import numpy as np
 import pandas as pd
 
+
+class PortfolioInsolventError(ValueError):
+    """The short side has exhausted the strategy's equity."""
+
 def _next_rebalance(period: pd.Period, prices: pd.DataFrame) -> pd.Timestamp:
     future = prices[prices.trade_date.dt.to_period("M").eq(period + 1)]
     if future.empty:
@@ -92,17 +96,27 @@ def backtest_one(predictions: pd.DataFrame, *, cost_bps: float = 30.0) -> tuple[
     if "stock_return" not in predictions:
         raise ValueError("call attach_forward_trade_returns first")
     trades, returns = [], []
-    previous_weights: dict[str, float] = {}
+    carried_weights: dict[str, float] = {}
     grouped = list(predictions.groupby("period", sort=True))
     for index, (period, frame) in enumerate(grouped):
         chosen = _positions(frame)
         weights = dict(zip(chosen.security_id, chosen.weight))
-        turnover = sum(abs(weights.get(key, 0.0) - previous_weights.get(key, 0.0))
-                       for key in set(weights) | set(previous_weights))
-        if index == len(grouped) - 1:
-            turnover += sum(abs(value) for value in weights.values())
-        cost = turnover * cost_bps / 10_000
+        turnover = sum(abs(weights.get(key, 0.0) - carried_weights.get(key, 0.0))
+                       for key in set(weights) | set(carried_weights))
         gross = float((chosen.weight * chosen.stock_return).sum())
+        if 1 + gross <= 0:
+            raise PortfolioInsolventError(f"portfolio equity exhausted in {period}")
+        # Price drift changes the positions held at the next close, even if
+        # the same names are selected again. Express them per gross portfolio NAV.
+        next_carried = dict(zip(
+            chosen.security_id,
+            chosen.weight * (1 + chosen.stock_return) / (1 + gross),
+        ))
+        if index == len(grouped) - 1:
+            turnover += sum(abs(value) for value in next_carried.values())
+        cost = turnover * cost_bps / 10_000
+        if 1 + gross - cost <= 0:
+            raise PortfolioInsolventError(f"portfolio equity exhausted after trading costs in {period}")
         long_return = float((chosen.loc[chosen.side.eq("long"), "weight"] *
                              chosen.loc[chosen.side.eq("long"), "stock_return"]).sum())
         short_return = float((chosen.loc[chosen.side.eq("short"), "weight"] *
@@ -124,7 +138,7 @@ def backtest_one(predictions: pd.DataFrame, *, cost_bps: float = 30.0) -> tuple[
             "period", "security_id", "side", "weight", "p_jump", "p_crash",
             "rebalance_date", "exit_date", "stock_return",
         ]])
-        previous_weights = weights
+        carried_weights = next_carried
     return pd.concat(trades, ignore_index=True), pd.DataFrame(returns)
 
 
@@ -163,7 +177,11 @@ def backtest_all(predictions: pd.DataFrame, prices: pd.DataFrame) -> tuple[pd.Da
                     continue
             else:
                 chosen = frame
-            trades, monthly = backtest_one(chosen)
+            try:
+                trades, monthly = backtest_one(chosen)
+            except PortfolioInsolventError as exc:
+                report[f"{features}/{model}/{universe}"] = {"status": "insolvent", "reason": str(exc)}
+                continue
             for output in (trades, monthly):
                 output["feature_set"] = features
                 output["model"] = model
@@ -177,4 +195,6 @@ def backtest_all(predictions: pd.DataFrame, prices: pd.DataFrame) -> tuple[pd.Da
                 "net_0pct_borrow": portfolio_metrics(monthly, "net_return_0pct_borrow"),
                 "net_3pct_borrow": portfolio_metrics(monthly, "net_return_3pct_borrow"),
             }
+    if not all_returns:
+        return pd.DataFrame(), pd.DataFrame(), report
     return pd.concat(all_trades, ignore_index=True), pd.concat(all_returns, ignore_index=True), report

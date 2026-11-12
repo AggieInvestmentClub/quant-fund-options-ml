@@ -7,7 +7,7 @@ import math
 import numpy as np
 import pandas as pd
 
-from .backtest import backtest_one, portfolio_metrics
+from .backtest import PortfolioInsolventError, backtest_one, portfolio_metrics
 
 
 def _prepared_months(predictions: pd.DataFrame) -> list[dict]:
@@ -37,7 +37,7 @@ def randomized_mean_monthly_return(
 
 
 def _mean_from_prepared(months: list[dict], rng: np.random.Generator, *, randomize: bool) -> float:
-    previous: dict[str, float] = {}
+    carried: dict[str, float] = {}
     net_returns = []
     for month_index, data in enumerate(months):
         ids, caps, stock_returns = data["ids"], data["caps"], data["returns"]
@@ -73,13 +73,22 @@ def _mean_from_prepared(months: list[dict], rng: np.random.Generator, *, randomi
             **{ids[index]: float(caps[index] / caps[long_index].sum()) for index in long_index},
             **{ids[index]: float(-caps[index] / caps[short_index].sum()) for index in short_index},
         }
-        turnover = sum(abs(weights.get(key, 0.0) - previous.get(key, 0.0))
-                       for key in weights.keys() | previous.keys())
-        if month_index == len(months) - 1:
-            turnover += sum(abs(value) for value in weights.values())
+        turnover = sum(abs(weights.get(key, 0.0) - carried.get(key, 0.0))
+                       for key in weights.keys() | carried.keys())
         gross = sum(weight * stock_returns[np.searchsorted(ids, key)] for key, weight in weights.items())
-        net_returns.append(gross - 0.003 * turnover)
-        previous = weights
+        if 1 + gross <= 0:
+            return -1.0  # Insolvent randomized portfolio cannot beat a solvent strategy.
+        next_carried = {
+            key: weight * (1 + stock_returns[np.searchsorted(ids, key)]) / (1 + gross)
+            for key, weight in weights.items()
+        }
+        if month_index == len(months) - 1:
+            turnover += sum(abs(value) for value in next_carried.values())
+        net = gross - 0.003 * turnover
+        if 1 + net <= 0:
+            return -1.0
+        net_returns.append(net)
+        carried = next_carried
     return float(np.mean(net_returns))
 
 
@@ -156,7 +165,10 @@ def monte_carlo_all(attached_predictions: pd.DataFrame, *, iterations: int = 2_0
                     continue
             else:
                 cohort = frame
-            result[key] = monte_carlo_one(cohort, iterations=iterations, seed=seed)
+            try:
+                result[key] = monte_carlo_one(cohort, iterations=iterations, seed=seed)
+            except PortfolioInsolventError as exc:
+                result[key] = {"status": "insolvent", "reason": str(exc)}
     for universe in ("full", "sp500"):
         keys = [key for key, value in result.items()
                 if key.endswith(f"/{universe}") and "random_signal_one_sided_p" in value]

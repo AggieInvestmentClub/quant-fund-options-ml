@@ -4,3 +4,6 @@ pyarrow>=15
 scikit-learn>=1.7
 lightgbm>=4.0
 pytest>=8
+exchange-calendars==4.13.2
+matplotlib>=3.9
+joblib>=1.4
