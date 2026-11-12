@@ -62,7 +62,7 @@ def pipeline(kind):
     return make_pipeline(SimpleImputer(strategy='median',add_indicator=True,keep_empty_features=True),StandardScaler(),model)
 
 def weekly_models(panel,sched,out):
-    complete=sched[sched.exit_date.notna() & sched.exit_date.le(panel.attrs['price_last'])]
+    complete=sched[sched.exit_date.notna() & sched.exit_date.le(pd.Timestamp(panel.attrs['price_last']))]
     periods=complete.period.tolist()[-26:]
     if len(periods)!=26:raise ValueError('need 26 completed weekly periods')
     groups={'stock_only':STOCK,'options_only':OPTION,'combined':STOCK+OPTION};frames=[];windows=[]
@@ -215,7 +215,7 @@ def run(snapshot,out,mode,iterations,max_cores):
     for track in (['paper_diagnostic','weekly'] if mode=='both' else [mode]):
         dest=out/track;(dest/'models').mkdir(parents=True)
         if track=='weekly':
-            panel,sched=weekly_panel(tables);panel.attrs['price_last']=tables['stock_prices'].trade_date.max();pred=weekly_models(panel,sched,dest)
+            panel,sched=weekly_panel(tables);panel.attrs['price_last']=str(tables['stock_prices'].trade_date.max());pred=weekly_models(panel,sched,dest)
             panel.drop(columns=[],errors='ignore').to_parquet(dest/'weekly_panel.parquet',index=False)
             latest=panel[panel.decision_at.eq(panel.decision_at.max())].copy();artifact=joblib.load(dest/'latest_model.joblib');latest['score']=artifact['model'].predict(latest[artifact['features']]);latest[['security_id','trade_date','entry_date','score']].to_parquet(dest/'latest_scores.parquet',index=False)
             dump(dest/'feature_schema.json',dict(stock=STOCK,options=OPTION,primary='combined/ridge',target='next scheduled weekly entry-to-exit adjusted return'))
