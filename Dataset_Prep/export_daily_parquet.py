@@ -249,13 +249,19 @@ def export_partitioned_parquet_date(
     trade_date_str: str,
     output_dir: Path,
     schema: pa.Schema,
-) -> Path:
+) -> Optional[Path]:
     """Atomically write a single trade date Parquet partition."""
     trade_date = date.fromisoformat(trade_date_str)
     partition_dir = output_dir / f"year={trade_date.year}"
     partition_dir.mkdir(parents=True, exist_ok=True)
 
     dest_path = partition_dir / f"{trade_date_str}.parquet"
+    if aligned_df.empty:
+        print(f"  WARNING: {trade_date_str} has 0 rows. Skipping empty Parquet export.")
+        if dest_path.exists():
+            dest_path.unlink(missing_ok=True)
+        return None
+
     tmp_path = partition_dir / f".{trade_date_str}.parquet.tmp"
 
     table = pa.Table.from_pandas(aligned_df, schema=schema, preserve_index=False)
@@ -274,8 +280,22 @@ def export_consolidated_parquet(
     parquet_files = sorted(output_dir.rglob("*.parquet"))
     parquet_files = [f for f in parquet_files if not f.name.startswith(".")]
 
+    # Discard any empty 0-row partition files
+    valid_files = []
+    for f in parquet_files:
+        try:
+            meta = pq.read_metadata(f)
+            if meta.num_rows > 0:
+                valid_files.append(f)
+            else:
+                print(f"Removing empty 0-row Parquet partition: {f.name}")
+                f.unlink(missing_ok=True)
+        except Exception:
+            valid_files.append(f)
+    parquet_files = valid_files
+
     if not parquet_files:
-        raise ValueError(f"No parquet partition files found in {output_dir}")
+        raise ValueError(f"No valid parquet partition files found in {output_dir}")
 
     tmp_path = single_file_path.with_name(f".{single_file_path.name}.tmp")
     single_file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -460,9 +480,10 @@ def main() -> None:
         completed_count += 1
         total_rows += len(day_df)
 
+        out_name = out_path.name if out_path is not None else "(skipped 0 rows)"
         if idx % 50 == 0 or idx == len(selected_dates):
             pct = int(100 * idx / len(selected_dates))
-            print(f"  [{idx}/{len(selected_dates)}] {pct:3d}% - {d_str}: {len(day_df)} rows -> {out_path.name}")
+            print(f"  [{idx}/{len(selected_dates)}] {pct:3d}% - {d_str}: {len(day_df)} rows -> {out_name}")
 
     elapsed = time.monotonic() - start_time
     print(f"\nSuccessfully exported {completed_count} dates ({total_rows:,} rows) in {elapsed:.1f}s.")

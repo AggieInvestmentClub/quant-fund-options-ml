@@ -1194,6 +1194,12 @@ REQUIRED_IV_OUTPUT_COLS = {
 # AGENTS: Resume support; used to avoid reprocessing valid per-day IV outputs.
 def existing_iv_output_is_valid(output_path: Path) -> bool:
     try:
+        with open(output_path, "r") as f:
+            header = f.readline()
+            second_line = f.readline()
+            if not second_line:
+                print(f"  reprocessing empty IV file (0 rows): {output_path}")
+                return False
         columns = pd.read_csv(output_path, nrows=0).columns
     except Exception:
         return False
