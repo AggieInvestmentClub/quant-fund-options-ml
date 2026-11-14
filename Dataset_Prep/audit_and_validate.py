@@ -91,6 +91,11 @@ def audit_dataset(df: pd.DataFrame) -> Dict[str, object]:
     report["sp500_rows"] = sp500_rows
     report["sp500_pct"] = sp500_rows / total_rows if total_rows else 0.0
 
+    # Investable options universe breakdown
+    investable_rows = int(df["is_options_investable"].sum()) if "is_options_investable" in df.columns else 0
+    report["investable_rows"] = investable_rows
+    report["investable_pct"] = investable_rows / total_rows if total_rows else 0.0
+
     # Stock coverage & validity
     stock_populated = int(df["stock_close"].notna().sum())
     stock_positive = int((df["stock_close"] > 0).sum())
@@ -104,7 +109,10 @@ def audit_dataset(df: pd.DataFrame) -> Dict[str, object]:
         + ["risk_reversal_25_delta_30d", "put_skew_10_25_30d", "atm_iv_30d"]
         + ["risk_reversal_25_delta_60d", "put_skew_10_25_60d", "atm_iv_60d"]
         + ["risk_reversal_25_delta_90d", "put_skew_10_25_90d", "atm_iv_90d"]
-        + ["stock_adj_close", "stock_close", "stock_volume", "shares_outstanding", "market_cap"]
+        + ["stock_adj_close", "stock_close", "stock_open", "stock_adj_open", "stock_volume", "dollar_volume", "shares_outstanding", "market_cap"]
+        + ["size", "tvol_20d", "tvol_60d", "tskew_60d", "rm1", "rm3", "rm12", "exret_daily", "dturn_20d", "volume_ratio_20d"]
+        + ["iv_level", "iv_gap", "variance_proxy", "iv_to_rv_ratio", "iv_level_cs_rank", "risk_reversal_25_delta_30d_robust", "atm_iv_30d_robust"]
+        + ["forward_1d_return", "forward_5d_return", "forward_21d_return", "target_open_to_close_1d", "target_tradable_5d_return", "forward_5d_excess_return", "is_actively_trading", "is_options_investable"]
     )
 
     missingness = {}
@@ -130,6 +138,7 @@ def generate_markdown_report(report: Dict[str, object], output_file: Optional[Pa
         + (f"({', '.join(report['missing_business_days'][:5])})" if report['missing_business_days'] else "None (100% complete)"),
         f"- **Stocks per Day:** Mean = {report['rows_per_date_mean']:.1f}, Median = {report['rows_per_date_median']:.0f} (Min: {report['rows_per_date_min']}, Max: {report['rows_per_date_max']})",
         f"- **S&P 500 Membership:** {report['sp500_rows']:,} rows ({report['sp500_pct']:.1%})",
+        f"- **Investable Universe (`is_options_investable`):** {report.get('investable_rows', 0):,} rows ({report.get('investable_pct', 0.0):.1%})",
         f"- **Stock Price Availability:** {report['stock_close_populated_pct']:.2%} populated ({report['stock_close_positive_pct']:.2%} strictly positive)",
         "",
         "## 2. Feature Availability & Missingness Matrix",
@@ -139,7 +148,13 @@ def generate_markdown_report(report: Dict[str, object], output_file: Optional[Pa
 
     missingness: Dict[str, float] = report["missingness"]
     for col, nan_rate in missingness.items():
-        if "iv" in col or "gamma" in col or "delta" in col or "theta" in col or "vega" in col:
+        if col in ["size", "tvol_20d", "tvol_60d", "tskew_60d", "rm1", "rm3", "rm12", "exret_daily", "dturn_20d", "volume_ratio_20d"]:
+            category = "Academic Controls"
+        elif col in ["forward_1d_return", "forward_5d_return", "forward_21d_return", "target_open_to_close_1d", "target_tradable_5d_return", "forward_5d_excess_return", "is_actively_trading", "is_options_investable"]:
+            category = "Targets & Activity"
+        elif col in ["iv_level", "iv_gap", "variance_proxy", "iv_to_rv_ratio", "iv_level_cs_rank", "risk_reversal_25_delta_30d_robust", "atm_iv_30d_robust"]:
+            category = "Compact Signals"
+        elif "iv" in col or "gamma" in col or "delta" in col or "theta" in col or "vega" in col:
             category = "ATM Greeks" if col.startswith("avg_") else ("30d/60d/90d Greeks" if "_30d" in col or "_60d" in col or "_90d" in col else "Surface Greeks")
         elif "skew" in col or "reversal" in col:
             category = "Skew & RR"

@@ -60,3 +60,11 @@ PARQUET_SINGLE_FILE = Path(
         str(FEATURE_DATA_ROOT / "ml_dataset_daily.parquet"),
     )
 ).expanduser()
+
+RISK_FREE_RATE_CSV = Path(
+    os.environ.get(
+        "OPTIONS_RISK_FREE_RATE_CSV",
+        "/srv/data/risk_free_rate/DGS3MO_risk_free_rate.csv",
+    )
+).expanduser()
+

@@ -95,7 +95,8 @@ def enrich_stock_history_with_shares(
 
     try:
         stk_df = pd.read_csv(stock_path)
-    except Exception:
+    except Exception as e:
+        print(f"Warning: Failed to read {stock_path.name}: {e}")
         return None
 
     if stk_df.empty or "Date" not in stk_df.columns or "Close" not in stk_df.columns:

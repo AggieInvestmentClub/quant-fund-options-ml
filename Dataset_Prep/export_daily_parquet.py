@@ -38,12 +38,18 @@ from Dataset_Prep.config import (
     FLATFILES_ROOT,
     PARQUET_OUTPUT_DIR,
     PARQUET_SINGLE_FILE,
+    RISK_FREE_RATE_CSV,
 )
 from constituency import active_symbols_on_date, load_constituency_snapshots, Snapshot
 from Dataset_Prep.dataset_schema import (
     ALL_DATASET_COLUMNS,
     cast_and_align_frame,
     get_pyarrow_schema,
+)
+from Dataset_Prep.enrich_features import (
+    enrich_stock_history_time_series,
+    enrich_single_day_option_features,
+    enrich_full_table_option_lags,
 )
 import flat_file
 
@@ -91,10 +97,12 @@ def load_all_stocks(stock_root: Path) -> pd.DataFrame:
         ticker = path.name.replace("_stock_data.csv", "")
         try:
             df = pd.read_csv(path)
-        except Exception:
+        except Exception as e:
+            print(f"Warning: Failed to read {path.name}: {e}")
             continue
 
         if "Date" not in df.columns or df.empty:
+            print(f"Warning: {path.name} is empty or missing 'Date' column")
             continue
 
         rename_map = {
@@ -124,6 +132,15 @@ def load_all_stocks(stock_root: Path) -> pd.DataFrame:
     combined["trade_date"] = combined["trade_date"].astype(str)
     combined["underlying"] = combined["underlying"].astype(str)
 
+    # Two-way coalesce stock_beta and historical_beta across stock files
+    if "stock_beta" in combined.columns and "historical_beta" in combined.columns:
+        combined["stock_beta"] = combined["stock_beta"].fillna(combined["historical_beta"])
+        combined["historical_beta"] = combined["historical_beta"].fillna(combined["stock_beta"])
+    elif "historical_beta" in combined.columns:
+        combined["stock_beta"] = combined["historical_beta"]
+    elif "stock_beta" in combined.columns:
+        combined["historical_beta"] = combined["stock_beta"]
+
     # Always merge canonical shares_outstanding.parquet lookup
     shares_parquet = stock_root / "shares_outstanding.parquet"
     if shares_parquet.exists():
@@ -144,6 +161,10 @@ def load_all_stocks(stock_root: Path) -> pd.DataFrame:
     # Ensure market_cap is populated from stock_close * shares_outstanding
     if "shares_outstanding" in combined.columns:
         combined["market_cap"] = combined["stock_close"] * combined["shares_outstanding"]
+
+    # Enrich stock history with academic controls (SIZE, TVOL, TSKEW, RM, EXRET, DTURN, forward returns, labels)
+    print("Enriching stock history with academic controls and forward returns...")
+    combined = enrich_stock_history_time_series(combined, RISK_FREE_RATE_CSV)
 
     return combined
 
@@ -210,12 +231,15 @@ def build_single_day_dataset(
     else:
         merged = options_merged
 
-    # 5. Attach options availability metadata
+    # 5. Enrich single-day option features (IV Level, IV Gap, Variance Proxy, robust coalescing)
+    merged = enrich_single_day_option_features(merged)
+
+    # 6. Attach options availability metadata
     avail_time, tradable_date = resolve_options_availability(trade_date, flatfiles_root)
     merged["options_available_time"] = avail_time
     merged["tradable_date"] = tradable_date
 
-    # 6. Cast and align with strict schema
+    # 7. Cast and align with strict schema
     aligned = cast_and_align_frame(merged)
     return aligned
 
@@ -244,8 +268,9 @@ def export_consolidated_parquet(
     output_dir: Path,
     single_file_path: Path,
     schema: pa.Schema,
+    update_partitions: bool = True,
 ) -> Path:
-    """Read all partitioned parquet files and write a single consolidated Parquet file."""
+    """Read all partitioned parquet files, enrich multi-day rolling lags, and write consolidated Parquet."""
     parquet_files = sorted(output_dir.rglob("*.parquet"))
     parquet_files = [f for f in parquet_files if not f.name.startswith(".")]
 
@@ -258,8 +283,29 @@ def export_consolidated_parquet(
     # Read and concatenate tables
     tables = [pq.read_table(f, schema=schema) for f in parquet_files]
     combined_table = pa.concat_tables(tables)
-    pq.write_table(combined_table, tmp_path, compression="zstd")
+
+    # Enrich full-table option lags (delta_5d_iv_gap, delta_20d_iv_gap, delta_5d_rr_60d)
+    combined_df = combined_table.to_pandas()
+    combined_df = enrich_full_table_option_lags(combined_df)
+    combined_df = cast_and_align_frame(combined_df)
+
+    final_table = pa.Table.from_pandas(combined_df, schema=schema, preserve_index=False)
+    pq.write_table(final_table, tmp_path, compression="zstd")
     tmp_path.replace(single_file_path)
+
+    # Update individual partition files so partitioned queries also include enriched lag features
+    if update_partitions:
+        print(f"Updating {len(parquet_files)} partitioned Parquet files with enriched lags...")
+        for trade_date_str, group_df in combined_df.groupby("trade_date"):
+            trade_date = date.fromisoformat(str(trade_date_str))
+            partition_dir = output_dir / f"year={trade_date.year}"
+            partition_dir.mkdir(parents=True, exist_ok=True)
+            dest_path = partition_dir / f"{trade_date_str}.parquet"
+            tmp_part = partition_dir / f".{trade_date_str}.parquet.tmp"
+            part_table = pa.Table.from_pandas(group_df, schema=schema, preserve_index=False)
+            pq.write_table(part_table, tmp_part, compression="zstd")
+            tmp_part.replace(dest_path)
+
     return single_file_path
 
 
