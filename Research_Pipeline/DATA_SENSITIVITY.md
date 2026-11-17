@@ -68,3 +68,18 @@ python -m pytest -q Research_Pipeline
 ```
 
 Tests cover source/target exclusion, exact exchange-session lookbacks, gaps, ticker separation, strict chronology, training-only pruning, stable schemas/cache checks, all twelve synthetic variants through ledger/simulation, shared randomizations, cost splits/reversals, caps and standalone modes. Publish code, tests and instructions only. Keep data, fits and research results outside Git.
+
+## Presentation exports
+
+`Research_Pipeline.sensitivity_report` creates charts, a plain-language report, reconciled leg attribution and paired incremental-options summaries. Its optional export takes existing private Word and TeX reference reports so original tables and the monthly paper diagnostic remain available:
+
+```sh
+python -m Research_Pipeline.sensitivity_report --results /private/new-sensitivity-results
+python -m Research_Pipeline.sensitivity_report \
+  --results /private/new-sensitivity-results \
+  --base-docx /private/reference-report.docx \
+  --base-tex /private/reference-paper/main.tex \
+  --output-dir /private/presentation
+```
+
+The document export additionally needs `python-docx`; use the configured document runtime. The TeX project includes its figures and needs `longtable` and `graphicx`. Compile the TeX or render the Word file to PDF and inspect every page before delivery. Data results are loaded at export time rather than copied into public source. Original report files are read-only inputs. `report_sources.json` records the result manifest and reference paths. Exported findings use Experiment → Model → Feature set → Results, keeping high-level model explanations and application details.
