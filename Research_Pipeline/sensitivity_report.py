@@ -7,6 +7,9 @@ import pandas as pd
 
 def load(path):return json.loads(Path(path).read_text())
 
+def dump(path,value):
+    Path(path).write_text(json.dumps(value,indent=2,sort_keys=True,default=str)+'\n')
+
 def build_charts(root):
     import matplotlib
     matplotlib.use('Agg')
@@ -69,7 +72,7 @@ def build_charts(root):
         fig,axes=plt.subplots(2,3,figsize=(11,6));top=f.tail(6).features.tolist()
         for ax,c in zip(axes.flat,top):
             e=effects[effects.feature.eq(c)]
-            if 'centered_effect' in e:ax.plot((e.low+e.high)/2,e.centered_effect,marker='o',ms=3)
+            if 'centered_effect' in e:ax.plot(e.high,e.centered_effect,marker='o',ms=3)
             ax.set_title(c,fontsize=9);ax.tick_params(labelsize=7)
         for ax in list(axes.flat)[len(top):]:ax.set_visible(False)
         fig.suptitle('Local feature response; observed ranges, descriptive effects');fig.tight_layout()
@@ -133,6 +136,7 @@ def document_sections(root):
         ['Assessment','52 signals May 2 2025 through April 24 2026; two weeks unscorable'],
         ['Historical comparison','26 holding periods May 11 through November 9 2026']])
     paragraph('The update adds observations and stock variables, but does not supply ten years of options history or repair every missing exit price. EQR, WBD and KVUE still have incomplete histories. Filled term slopes and robust fallback features have unverified definitions; the experiment reconstructs original endpoint slopes and uses only verified input formulas. Forward returns, labels and target-validity flags never enter predictors or stock selection.')
+    paragraph('CTVA has a revised adjusted-price history that removes the original September 24 one-day discontinuity. This is a different source vintage, so its effect is isolated in the updated-price comparison. The calculation of corporate-action adjustments remains subject to source verification; we do not infer cash settlements or synthetic exit prices.')
     heading('How data and modeling changes are separated')
     reproduction=load(root/'baseline/control_reproduction.json')
     paragraph('Four original stock-only/full controls were refitted on original inputs. Their largest absolute prediction difference is '+str(max(x['max_absolute_prediction_error'] for x in reproduction.values()))+'. Original daily equity, holdings and costs were also checked. Saved predictions are then replayed with updated prices, followed by unchanged models retrained on updated data. Only after these controls are the feature variants compared.')
@@ -174,8 +178,9 @@ def document_sections(root):
     blocks.append(('image','charts/equity.png','Only portfolios with complete required prices are plotted. Missing selected prices invalidate a result.'))
     heading('Monte Carlo and bootstrap results')
     paragraph('Each of twelve main variants receives 2,000 within-week score shuffles inside market-cap deciles. Donor permutations are shared across models and gross/net portfolios. Ranking and portfolio p-values are adjusted separately for twelve comparisons. A paired four-week block bootstrap uses 2,000 samples to measure uncertainty. These simulations do not add market history or create independent evidence.')
-    paragraph('The predeclared pruned-extended Ridge challenger improves mean historical IC versus full Ridge by '+fmt(delta['observed'],5)+'. Its 95 percent paired bootstrap interval is '+str(delta['bootstrap_95pct'])+'. Original Combined Ridge remains the original primary strategy.')
-    table(['Model and features','Adjusted rank p','Invalid net draws','Net portfolio p bounds'],[[v,fmt(m['ranking_p_adjusted'],3),str(m['invalid_net_draws']),str(m['portfolio_p_bounds'])] for v,m in s.items()])
+    bounds=lambda values:'Unavailable' if values is None else '['+', '.join(fmt(x,4) for x in values)+']'
+    paragraph('The predeclared pruned-extended Ridge challenger has a mean historical IC difference versus full Ridge of '+fmt(delta['observed'],5)+'. Its 95 percent paired bootstrap interval is '+bounds(delta['bootstrap_95pct'])+'. Original Combined Ridge remains the original primary strategy.')
+    table(['Model and features','Adjusted rank p','Invalid net draws','Raw net p bounds','Adjusted net p bounds'],[[v,fmt(m['ranking_p_adjusted'],3),str(m['invalid_net_draws']),bounds(m['portfolio_p_bounds']),bounds(m['portfolio_adjusted_p_bounds'])] for v,m in s.items()])
     paragraph('Invalid portfolio draws remain in the inference through conservative bounds. No valid-draw-only p-value is reported. Week-by-week shuffling changes persistence and turnover, so the randomized portfolios are not a turnover-matched null. Earlier assessment block summaries retain two weeks with only one eligible stock; whole-window trading and complete 52-week ranking inference remain unavailable there.')
     blocks.append(('image','charts/randomization.png','The observed challenger ranking is compared with scores randomly reassigned among similarly sized stocks.'))
     heading('Model setting and portfolio sensitivity')
@@ -211,12 +216,17 @@ def export_documents(root,output,base_docx,base_tex):
     import shutil
     root,output=Path(root),Path(output);output.mkdir(parents=True,exist_ok=True)
     blocks=document_sections(root);doc=Document(base_docx)
+    doc.paragraphs[0].text='Options Signals for Stock Jumps Crashes and Weekly Trading'
+    note=doc.paragraphs[1].insert_paragraph_before('Updated November 16 2026. Original experiments are retained as reference evidence; the final section reports the updated data and sensitivity experiment.')
+    note.style='Subtitle'
     # Introduce the two research parts in the retained presentation document.
     for para in list(doc.paragraphs):
         if para.text=='Experiment A Monthly diagnostic results':
             p=para.insert_paragraph_before('Part One Replicating the reference paper');p.style='Heading 1'
+            p.paragraph_format.page_break_before=True;para.paragraph_format.page_break_before=False
         if para.text=='Experiment B Weekly strategy results':
             p=para.insert_paragraph_before('Part Two Weekly trading strategy');p.style='Heading 1'
+            p.paragraph_format.page_break_before=True;para.paragraph_format.page_break_before=False
     doc.add_page_break()
     tex=[]
     def esc(s):
@@ -230,13 +240,19 @@ def export_documents(root,output,base_docx,base_tex):
             doc.add_paragraph(block[1]);tex.append(esc(block[1])+'\n')
         elif kind=='table':
             headers,rows=block[1:];table=doc.add_table(rows=1,cols=len(headers));table.style='Light Shading Accent 1'
+            table.autofit=False
+            first=2.2 if len(headers)>4 else 2.5
+            widths_in=[first]+[(6.8-first)/(len(headers)-1)]*(len(headers)-1)
+            for column,width in zip(table.columns,widths_in):column.width=Inches(width)
             for cell,text in zip(table.rows[0].cells,headers):cell.text=str(text)
             repeat=OxmlElement('w:tblHeader');table.rows[0]._tr.get_or_add_trPr().append(repeat)
             for row in rows:
                 cells=table.add_row().cells
-                for c,text in zip(cells,row):c.text=str(text)
+                for c,text in zip(cells,row):c.text=str(text).replace('_',' ').replace('/',' / ')
             for row in table.rows:
-                for c in row.cells:
+                avoid=OxmlElement('w:cantSplit');row._tr.get_or_add_trPr().append(avoid)
+                for c,width in zip(row.cells,widths_in):
+                    c.width=Inches(width)
                     for p in c.paragraphs:
                         p.paragraph_format.space_after=Pt(4)
                         for r in p.runs:r.font.size=Pt(9)
@@ -257,12 +273,24 @@ def export_documents(root,output,base_docx,base_tex):
     doc.save(output/'Options_Signals_Updated_Data_Report.docx')
     source=Path(base_tex).read_text();source=source.replace(r'\usepackage{enumitem,needspace,fancyhdr}',r'\usepackage{enumitem,needspace,fancyhdr,longtable,graphicx}')
     source=source.replace(r'\date{November 12, 2026}',r'\date{November 16, 2026}')
+    source=source.replace('The weekly strategies show weak ranking evidence and negative returns in every complete main-condition backtest.',
+                          'On the original snapshot, weekly strategies show weak ranking evidence and negative returns in every complete main-condition backtest. The updated-data comparisons in Part II retain weak ranking evidence and explicit missing-price failures.')
+    source=source.replace('An unresolved example is CTVA on September 24, 2026:',
+                          'In the original frozen snapshot, an unresolved example was CTVA on September 24, 2026:')
+    source=source.replace('The anomaly can still affect targets, training and benchmarks.',
+                          'That original-vintage anomaly can affect its targets, training and benchmarks. The updated snapshot revises the adjustment history and removes this one-day discontinuity, with source verification still required.')
+    source=source.replace('Software validation comprises 57 passing tests,',
+                          'Original software validation comprised 57 passing tests,')
     source=source.replace(r'\section{Limitations and conclusions across both parts}',
                           '\n'.join(tex)+'\n\\clearpage\n'+r'\section{Limitations and conclusions across both parts}')
     source=source.replace(r'\begin{abstract}',r'\begin{abstract}'+'\n'+esc('The original experiments are retained as reference results. The additional updated-data experiment in Part II reports the November 2026 snapshot, pruning, sensitivity analysis and paired inference.')+'\n')
     (output/'main.tex').write_text(source)
-    dump(output/'report_sources.json',dict(results_manifest_sha256=__import__('hashlib').sha256((root/'manifest.json').read_bytes()).hexdigest(),
-         base_docx=str(base_docx),base_tex=str(base_tex),shared_content_blocks=len(blocks)))
+    digest=lambda p:__import__('hashlib').sha256(Path(p).read_bytes()).hexdigest()
+    dump(output/'report_sources.json',dict(results_manifest_sha256=digest(root/'manifest.json'),
+         base_docx=str(base_docx),base_tex=str(base_tex),shared_content_blocks=len(blocks),
+         reference_document_hashes={str(p):digest(p) for p in [base_docx,base_tex]},
+         displayed_result_hashes={str(p.relative_to(root)):digest(p) for p in
+            [root/'historical/metrics.json',root/'historical/monte_carlo.json',root/'historical/primary_ic_difference.json']}))
 
 
 def main():
