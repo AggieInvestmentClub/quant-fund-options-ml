@@ -219,6 +219,20 @@ def export_documents(root,output,base_docx,base_tex):
     doc.paragraphs[0].text='Options Signals for Stock Jumps Crashes and Weekly Trading'
     note=doc.paragraphs[1].insert_paragraph_before('Updated November 16 2026. Original experiments are retained as reference evidence; the final section reports the updated data and sensitivity experiment.')
     note.style='Subtitle'
+    current=load(root/'historical/metrics.json');comparison=load(root/'historical/primary_ic_difference.json')
+    for para in doc.paragraphs:
+        if para.text.startswith('The new feature experiment tests whether smaller inputs'):
+            para.text=('The updated-data experiment compares twelve main model and feature combinations. '
+                f"Pruned-extended Ridge has historical rank IC {current['pruned_extended/ridge']['mean_ic']:.4f}, "
+                f"versus {current['full/ridge']['mean_ic']:.4f} for full Ridge. "
+                'Its paired confidence interval includes zero, and none of the twelve variants passes the adjusted ranking randomization test. '
+                'Eight main backtests are complete; four remain invalid because required selected prices are missing.')
+        elif para.text.startswith('Experiments A and B preserve the monthly paper diagnostic'):
+            para.text=('Experiments A, B and C retain the original monthly diagnostic, portfolio comparisons and eight-variant feature experiment as reference evidence. '
+                'The final section adds the updated-data experiment, automatic pruning, feature diagnostics and sensitivity analysis. All historical findings are exploratory.')
+        elif para.text=='Data and experiments':para.text='Original data and reference experiments'
+        elif para.text.startswith('Aggie Investment Club Options ML team | November 12'):
+            para.text=para.text.replace('November 12','November 16')
     # Introduce the two research parts in the retained presentation document.
     for para in list(doc.paragraphs):
         if para.text=='Experiment A Monthly diagnostic results':
