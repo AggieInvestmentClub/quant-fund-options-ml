@@ -84,3 +84,7 @@ For the frozen-prediction four-condition comparison, equal weights/5% target cap
 ## Weekly feature ablation
 
 [FEATURE_EXPERIMENT.md](FEATURE_EXPERIMENT.md) specifies the fixed full/compact/alternative input comparison, control prediction reproduction, 52-week earlier assessment, 26-week exploratory comparison and eight-variant ranking/portfolio inference. It retrains models but leaves the monthly paper reference unchanged.
+
+## Updated data and sensitivity
+
+See [DATA_SENSITIVITY.md](DATA_SENSITIVITY.md) for the frozen-data audit, twelve main variants, correlation pruning, chronological importance, local-effect plots, model/portfolio sensitivities and paired Monte Carlo inference.

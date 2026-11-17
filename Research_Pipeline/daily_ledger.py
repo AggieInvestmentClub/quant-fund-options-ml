@@ -8,7 +8,7 @@ class InvalidPortfolio(ValueError):
     pass
 
 def select_weights(scores, caps, ids, crash=None, portfolio=None):
-    n=max(1,math.ceil(len(ids)*.05))
+    n=max(1,math.ceil(len(ids)*(.05 if portfolio is None else portfolio.selection_fraction)))
     if len(ids)<2*n:
         raise InvalidPortfolio('universe too small for two disjoint sides')
     lo=np.lexsort((ids,-scores)); so=np.lexsort((ids, scores if crash is None else -crash))
@@ -22,11 +22,15 @@ def select_weights(scores, caps, ids, crash=None, portfolio=None):
             if i not in side|other: side.add(i)
     w=np.zeros(len(ids))
     for side,sign in ((longs,1),(shorts,-1)):
+        if portfolio is not None and ((portfolio.mode=='long_only' and sign<0) or
+                                      (portfolio.mode=='short_only' and sign>0)):
+            continue
         ix=np.array(sorted(side))
         if portfolio is not None and portfolio.weighting=='equal':
-            w[ix]=sign*min(1/len(ix),portfolio.max_position)
+            w[ix]=sign*min(portfolio.side_exposure/len(ix),portfolio.max_position)
         else:
-            w[ix]=sign*caps[ix]/caps[ix].sum()
+            exposure=1. if portfolio is None else portfolio.side_exposure
+            w[ix]=sign*exposure*caps[ix]/caps[ix].sum()
     return w
 
 def prepare(predictions, prices):

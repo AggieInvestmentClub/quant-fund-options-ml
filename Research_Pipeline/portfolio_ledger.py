@@ -9,10 +9,17 @@ from .daily_ledger import InvalidPortfolio, select_weights
 class PortfolioSpec:
     weighting: str = 'market_cap'
     max_position: float = .05
+    selection_fraction: float = .05
+    side_exposure: float = 1.
+    mode: str = 'long_short'
 
     def __post_init__(self):
         if self.weighting not in ('market_cap','equal') or not 0 < self.max_position <= 1:
             raise ValueError('invalid portfolio specification')
+        if not 0 < self.selection_fraction <= .5 or not 0 < self.side_exposure <= 1:
+            raise ValueError('invalid selection fraction or exposure')
+        if self.mode not in ('long_short','long_only','short_only'):
+            raise ValueError('invalid portfolio mode')
 
 
 @dataclass(frozen=True)
@@ -112,13 +119,18 @@ def replay_ledger(periods, *, portfolio, costs, initial_capital=100000., rng=Non
         delta=target-old
         delta[np.abs(delta)<tol*.01]=0.
         fees=order_costs(delta,raw,costs)
+        long_traded=np.abs(np.maximum(target,0)-np.maximum(old,0))
+        short_traded=np.abs(np.minimum(target,0)-np.minimum(old,0))
         if capture:
             for j in np.flatnonzero(delta):
                 trades.append(dict(date=day,period=period,event=event,security_id=ids[j],
                     signed_notional=delta[j],notional=abs(delta[j]),raw_close=raw[j],
                     share_equivalent=fees['shares'][j],commission=fees['commission'][j],
                     regulatory=fees['regulatory'][j],execution=fees['execution'][j],
-                    flat_cost=fees['flat'][j],transaction_cost=fees['total'][j]))
+                    flat_cost=fees['flat'][j],transaction_cost=fees['total'][j],
+                    long_traded_notional=long_traded[j],short_traded_notional=short_traded[j],
+                    long_transaction_cost=fees['total'][j]*long_traded[j]/abs(delta[j]),
+                    short_transaction_cost=fees['total'][j]*short_traded[j]/abs(delta[j])))
         return delta,fees
 
     def record(day,values,nav,fees,borrow_fee):

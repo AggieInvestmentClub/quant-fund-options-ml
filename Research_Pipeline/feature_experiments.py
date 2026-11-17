@@ -214,7 +214,8 @@ def paired_statistics(pm):
     return out
 
 
-def simulations(pred,prepared,observed,pm,out,iterations=2000,seed=SEED,min_known=200):
+def simulations(pred,prepared,observed,pm,out,iterations=2000,seed=SEED,min_known=200,
+                primary=PRIMARY,reference=REFERENCE):
     """Common permutations and block indices across all eight fitted variants."""
     out=Path(out);variants=sorted(prepared);family=len(variants);base=prepared[variants[0]]
     matrices=[];targets=[]
@@ -269,7 +270,7 @@ def simulations(pred,prepared,observed,pm,out,iterations=2000,seed=SEED,min_know
         starts=rng.integers(0,n-blocks+1,size=int(np.ceil(n/blocks)))
         ix=np.concatenate([np.arange(s,s+blocks) for s in starts])[:n];idx.append(ix)
         vals=np.mean(observed_ic[ix],axis=0)
-        delta.append(vals[variants.index(PRIMARY)]-vals[variants.index(REFERENCE)])
+        delta.append(vals[variants.index(primary)]-vals[variants.index(reference)])
         for j,v in enumerate(variants):
             row=dict(draw=draw,variant=v,mean_ic=vals[j])
             for label in ['net','gross']:
@@ -285,8 +286,8 @@ def simulations(pred,prepared,observed,pm,out,iterations=2000,seed=SEED,min_know
         reports[v]['bootstrap_95pct']={c:np.quantile(f[c].dropna(),[.025,.975]).tolist() if f[c].notna().any() else None
             for c in f.columns if c not in ['draw','variant']}
     primary_ci=np.quantile(delta,[.025,.975]).tolist() if np.isfinite(delta).all() else None
-    dump(out/'monte_carlo.json',reports);dump(out/'primary_ic_difference.json',dict(primary=PRIMARY,reference=REFERENCE,
-        observed=float(rank_obs[variants.index(PRIMARY)]-rank_obs[variants.index(REFERENCE)]),bootstrap_95pct=primary_ci,
+    dump(out/'monte_carlo.json',reports);dump(out/'primary_ic_difference.json',dict(primary=primary,reference=reference,
+        observed=float(rank_obs[variants.index(primary)]-rank_obs[variants.index(reference)]),bootstrap_95pct=primary_ci,
         iterations=iterations,block_weeks=4,seed=seed))
     return reports,primary_ci
 
