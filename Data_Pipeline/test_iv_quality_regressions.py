@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 import flatfile_iv
+import utils
 from migrate_repaired_iv_rows import add_atm_greeks
 from utils import american_option_price_crr, compute_iv
 
@@ -13,6 +14,35 @@ UPDATER_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(UPDATER_ROOT / "Default_Strike_Pipeline"))
 
 import regular_features
+
+
+def test_vectorized_opra_parser_matches_row_parser() -> None:
+    tickers = pd.Series(
+        [
+            " O:AAPL261120C00150000 ",
+            "o:TSLA261120P00000001",
+            "O:GOOGLE681231C00150000",
+            "O:AAPL691231P00150000",
+            "O:AAPL260230C00150000",
+            "not-an-option",
+            None,
+        ],
+        index=[10, 20, 30, 40, 50, 60, 70],
+    )
+    expected = pd.DataFrame(
+        [
+            flatfile_iv.parse_opra_option_ticker(ticker)
+            or {"underlying": None, "expiration_date": None, "option_type": None, "strike": None}
+            for ticker in tickers
+        ],
+        index=tickers.index,
+    )
+    expected["expiration_date"] = pd.to_datetime(expected["expiration_date"], errors="coerce")
+    expected["strike"] = pd.to_numeric(expected["strike"], errors="coerce")
+
+    pd.testing.assert_frame_equal(
+        flatfile_iv.parse_opra_option_tickers(tickers), expected, check_dtype=False
+    )
 
 
 def test_low_sigma_crr_does_not_average_a_valid_tree_with_zero() -> None:
@@ -65,6 +95,40 @@ def test_crr_iv_round_trip_remains_accurate() -> None:
 
     assert actual_iv is not None
     assert abs(actual_iv - expected_iv) < 5e-5
+
+
+def test_reusing_iv_bracket_preserves_result_and_avoids_two_prices(monkeypatch) -> None:
+    inputs = {
+        "S": 100.0,
+        "K": 102.0,
+        "T": 60.0 / 365.25,
+        "r": 0.04,
+        "option_type": "put",
+        "q": 0.012,
+    }
+    market_price = american_option_price_crr(sigma=0.25, **inputs)
+    low_residual = american_option_price_crr(sigma=utils.IV_MIN_SIGMA, **inputs) - market_price
+    high_residual = american_option_price_crr(sigma=utils.IV_MAX_SIGMA, **inputs) - market_price
+    original_price = utils.american_option_price_crr
+    calls = 0
+
+    def counted_price(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_price(*args, **kwargs)
+
+    monkeypatch.setattr(utils, "american_option_price_crr", counted_price)
+    uncached = utils.compute_iv(market_price=market_price, **inputs)
+    uncached_calls = calls
+    calls = 0
+    cached = utils.compute_iv(
+        market_price=market_price,
+        bracket_residuals=(low_residual, high_residual),
+        **inputs,
+    )
+
+    assert cached == uncached
+    assert uncached_calls - calls == 2
 
 
 def test_intrinsic_value_option_has_no_identifiable_iv() -> None:

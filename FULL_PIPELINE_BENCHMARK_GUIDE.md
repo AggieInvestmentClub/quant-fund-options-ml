@@ -28,7 +28,7 @@ they are not a substitute for that driver.
    ```bash
    mkdir -p ~/quant-benchmark
    cd ~/quant-benchmark
-   git clone https://github.com/AggieInvestmentClub/quant-fund-options-ml.git source
+   git clone --branch integration/consolidated https://github.com/AggieInvestmentClub/quant-fund-options-ml.git source
    cd source
    git fetch --all --prune
    ```
@@ -56,27 +56,26 @@ git worktree add --detach ../native 5f56883fb44f10a5099a8d43a0e4c16c95d35b18
 git worktree add --detach ../vectorized fa7a007426e79728158a139d8c9b7088220c1fca
 ```
 
-The branches behind those commits are respectively `main`,
-`perf/reduce-options-cpu-cost`, `perf/native-crr-pricing`, and
-`perf/vectorized-opra-parsing`. The performance branches are **cumulative**:
+These immutable commits remain available after branch cleanup. Their archived
+performance tips are tagged under `archive/2026-11-17/perf/`. Use
+`integration/consolidated` for current development. The historical performance
+commits are **cumulative**:
 native includes the tree change; vectorized includes both. The tree change
 reuses two IV bracket price evaluations; it does not shorten the tree.
 
-For a new optimization, make and test the change in its own performance
-branch, push that branch to the **same** GitHub repo, then fetch it on the
-server. Add a new detached worktree pinned to the pushed commit; do not update
-a checkout while a benchmark is using it:
+Use the consolidated branch for current work and pin its commit for each run:
 
 ```bash
-# On the development machine, after testing and committing the change:
-git push -u origin perf/your-change
-
-# On darkpool:
-cd ~/quant-benchmark/source
-git fetch origin perf/your-change
-git worktree add --detach ../your-change FETCH_HEAD
-git -C ../your-change rev-parse HEAD
+git switch integration/consolidated
+git pull --ff-only origin integration/consolidated
+git rev-parse HEAD
+git worktree add --detach ../current <verified-commit>
 ```
+
+Do not update a checkout while a benchmark uses it. Select the pricing model,
+pricing backend and ingestion backend explicitly, and record all three.
+CRR remains the default; LR is a distinct model and must be reported separately.
+Do not compare a CRR reference to LR outputs as a backend-only speed test.
 
 Build its native extension on `darkpool` if the new checkout uses C++.
 

@@ -103,7 +103,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workers",
         type=int,
-        default=max(1, min(8, os.cpu_count() or 1)),
+        default=max(1, min(4, os.cpu_count() or 1)),
         help="Worker processes for file-level parallelism.",
     )
     return parser.parse_args()
@@ -240,6 +240,11 @@ def existing_output_is_valid(output_path: Path, source_path: Path) -> bool:
     try:
         if output_path.stat().st_mtime < source_path.stat().st_mtime:
             return False
+        with open(output_path, "r") as f:
+            header = f.readline()
+            second_line = f.readline()
+            if not second_line:
+                return False
         columns = pd.read_csv(output_path, nrows=0).columns.tolist()
     except Exception:
         return False

@@ -1,0 +1,5 @@
+-r Research_Pipeline/requirements.txt
+boto3
+scipy
+cmake
+yfinance

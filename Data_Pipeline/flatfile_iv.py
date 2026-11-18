@@ -1,6 +1,7 @@
 import argparse
 import concurrent.futures
 import grp
+import io
 import math
 import multiprocessing as mp
 import os
@@ -8,6 +9,7 @@ import pwd
 import re
 import shutil
 import sys
+import zlib
 from concurrent.futures.process import BrokenProcessPool
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -18,11 +20,22 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+try:
+    import _lr_native
+    _HAS_NATIVE_OPRA_STREAM = hasattr(_lr_native, "stream_filter_opra_file")
+except ImportError:
+    _lr_native = None
+    _HAS_NATIVE_OPRA_STREAM = False
+
 from config import DATA_DIR
+from pricing_settings import pricing_output_matches, write_pricing_stamp
 from interest_rate_getter import SERIES_ID as FRED_RISK_FREE_SERIES_ID
 from interest_rate_getter import fetch_fred_series, load_fred_api_key, load_local_risk_free_rates, risk_free_rate_csv_path
 from utils import (
+    IV_MAX_SIGMA,
+    IV_MIN_SIGMA,
     IV_PRICE_TOLERANCE,
+    american_option_price_lr,
     american_option_price_crr,
     compute_iv,
     hypothetical_atm_greeks,
@@ -316,6 +329,136 @@ def parse_opra_option_ticker(ticker: str) -> Optional[Dict[str, Optional[str]]]:
         "strike": strike,
     }
 
+
+def parse_opra_option_tickers(tickers: pd.Series) -> pd.DataFrame:
+    """Extract OPRA fields for a whole flatfile without parsing dates row by row."""
+    fields = tickers.astype("string").str.strip().str.upper().str.extract(OPRA_TICKER_RE)
+    return pd.DataFrame(
+        {
+            "underlying": fields[0],
+            "expiration_date": pd.to_datetime(fields[1], format="%y%m%d", errors="coerce"),
+            "option_type": fields[2].map({"C": "call", "P": "put"}),
+            "strike": pd.to_numeric(fields[3], errors="coerce").astype("float64") / 1000.0,
+        },
+        index=tickers.index,
+    )
+
+
+def resolve_target_underlyings(
+    allowed_underlyings: Optional[set[str]],
+    testing: bool,
+    test_stock: str,
+) -> Optional[set[str]]:
+    """Determine the active underlying set for fast pre-filtering."""
+    if testing:
+        resolved_stock = normalize_underlying_symbol(test_stock)
+        stock_set = {resolved_stock} if resolved_stock else set()
+        return stock_set if allowed_underlyings is None else (allowed_underlyings & stock_set)
+    return allowed_underlyings
+
+
+def prefilter_raw_opra_frame(
+    df: pd.DataFrame,
+    target_underlyings: Optional[set[str]],
+    trade_date: date,
+    min_dte: int = DTE_MIN_DAYS,
+    max_dte: int = DTE_MAX_DAYS,
+) -> pd.DataFrame:
+    """Filter raw OPRA DataFrame before expensive regex parsing and metadata expansion."""
+    if df.empty or "ticker" not in df.columns:
+        return df
+
+    tickers = df["ticker"]
+
+    # 1. Underlying pre-filter (fastest: prunes > 99% of rows when targets exist)
+    if target_underlyings is not None:
+        if not target_underlyings:
+            return df.iloc[0:0].copy()
+        underlying_slice = tickers.str.slice(2, -15)
+        df = df[underlying_slice.isin(target_underlyings)]
+        if df.empty:
+            return df
+        tickers = df["ticker"]
+
+    # 2. DTE window pre-filter (lexicographical check on YYMMDD)
+    t_date = pd.Timestamp(trade_date)
+    min_exp_str = (t_date + timedelta(days=min_dte)).strftime("%y%m%d")
+    max_exp_str = (t_date + timedelta(days=max_dte)).strftime("%y%m%d")
+    expiry_slice = tickers.str.slice(-15, -9)
+    df = df[expiry_slice.between(min_exp_str, max_exp_str)]
+
+    return df.copy()
+
+
+def stream_filter_opra_gzip(
+    path: Path,
+    target_underlyings: Optional[set[str]],
+    trade_date: Optional[date] = None,
+    min_dte: int = DTE_MIN_DAYS,
+    max_dte: int = DTE_MAX_DAYS,
+) -> bytes:
+    """Stream and filter raw OPRA gzip file at the byte level before CSV parsing."""
+    min_exp_str = ""
+    max_exp_str = ""
+    if trade_date is not None:
+        t_date = pd.Timestamp(trade_date)
+        min_exp_str = (t_date + timedelta(days=min_dte)).strftime("%y%m%d")
+        max_exp_str = (t_date + timedelta(days=max_dte)).strftime("%y%m%d")
+
+    backend = os.environ.get("OPTIONS_OPRA_BACKEND", "auto").strip().lower()
+    if backend not in {"auto", "python", "native"}:
+        raise ValueError("OPTIONS_OPRA_BACKEND must be auto, python, or native")
+    if backend == "native" and not _HAS_NATIVE_OPRA_STREAM:
+        raise RuntimeError("Native OPRA ingestion unavailable; build Data_Pipeline/native/build.py")
+    if backend != "python" and _HAS_NATIVE_OPRA_STREAM and _lr_native is not None:
+        try:
+            symbols_arg = list(target_underlyings) if target_underlyings is not None else None
+            return _lr_native.stream_filter_opra_file(
+                str(path), symbols_arg, min_exp_str or None, max_exp_str or None
+            )
+        except Exception:
+            if backend == "native":
+                raise
+
+    # gzip's reader validates CRCs and handles concatenated gzip members. Exact
+    # ticker boundaries avoid matching AAPL when the requested symbol is A.
+    import gzip
+    symbols = None if target_underlyings is None else {s.encode("ascii") for s in target_underlyings}
+    if symbols == set():
+        return b""
+    matched = []
+    with gzip.open(path, "rb") as source:
+        header = source.readline()
+        if header:
+            matched.append(header.rstrip(b"\r\n") + b"\n")
+        for line in source:
+            if b"," not in line:
+                continue
+            ticker = line.split(b",", 1)[0]
+            if not ticker.startswith(b"O:") or len(ticker) < 18:
+                continue
+            sym, expiry = ticker[2:-15], ticker[-15:-9]
+            if symbols is not None and sym not in symbols:
+                continue
+            if min_exp_str and not min_exp_str.encode("ascii") <= expiry <= max_exp_str.encode("ascii"):
+                continue
+            matched.append(line.rstrip(b"\r\n") + b"\n")
+    return b"".join(matched)
+
+
+def read_prefiltered_opra_frame(
+    path: Path,
+    target_underlyings: Optional[set[str]],
+    trade_date: Optional[date] = None,
+    min_dte: int = DTE_MIN_DAYS,
+    max_dte: int = DTE_MAX_DAYS,
+) -> pd.DataFrame:
+    """Read an OPRA flat file directly into a pre-filtered DataFrame using streaming decompression."""
+    raw_bytes = stream_filter_opra_gzip(path, target_underlyings, trade_date, min_dte, max_dte)
+    if not raw_bytes or raw_bytes.strip() == b"":
+        return pd.DataFrame()
+    return pd.read_csv(io.BytesIO(raw_bytes))
+
 # AGENTS: Mission-critical universe guard; filters malformed or unsupported underlying symbols.
 def is_supported_underlying(symbol: str) -> bool:
     return bool(symbol and SUPPORTED_UNDERLYING_RE.fullmatch(symbol))
@@ -570,7 +713,7 @@ def fetch_underlying_dividend_yields(
     return dividend_yields
 
 # AGENTS: Mission-critical row worker; computes IV for one option row and is used in serial/parallel paths.
-def compute_row_iv_task(task: IvTask) -> IvResult:
+def _compute_row_crr_iv_task(task: IvTask) -> IvResult:
     underlying_close, strike, close, time_to_expiry_years, risk_free_rate, dividend_yield, option_type = task
     if any(is_missing_value(value) for value in (underlying_close, strike, close)):
         return None, "missing_input"
@@ -600,8 +743,8 @@ def compute_row_iv_task(task: IvTask) -> IvResult:
         ) - float(close)
 
     try:
-        lo_val = objective(0.001)
-        hi_val = objective(5.0)
+        lo_val = objective(IV_MIN_SIGMA)
+        hi_val = objective(IV_MAX_SIGMA)
     except Exception:
         return None, "solver_error"
 
@@ -618,10 +761,45 @@ def compute_row_iv_task(task: IvTask) -> IvResult:
         r=float(risk_free_rate),
         option_type=option_type,
         q=q,
+        bracket_residuals=(lo_val, hi_val),
     )
     if iv is None:
         return None, "solver_error"
     return iv, "ok"
+
+
+def compute_row_iv_task(task: IvTask) -> IvResult:
+    from pricing_settings import PRICING_MODEL
+    if PRICING_MODEL == "crr":
+        return _compute_row_crr_iv_task(task)
+    underlying_close, strike, close, time_to_expiry_years, risk_free_rate, dividend_yield, option_type = task
+    if any(is_missing_value(value) for value in (underlying_close, strike, close)):
+        return None, "missing_input"
+    if is_missing_value(time_to_expiry_years) or time_to_expiry_years <= 0:
+        return None, "invalid_expiry"
+    if is_missing_value(risk_free_rate):
+        return None, "missing_risk_free_rate"
+    q = 0.0 if is_missing_value(dividend_yield) else max(0.0, float(dividend_yield))
+
+    intrinsic = option_intrinsic_value(underlying_close, strike, option_type)
+    upper = underlying_close if option_type == "call" else strike
+    if close < intrinsic - 1e-6 or close > upper + 1e-6:
+        return None, "arbitrage_bounds"
+    if close <= intrinsic + IV_PRICE_TOLERANCE:
+        return None, "nonpositive_time_value"
+
+    iv = compute_iv(
+        market_price=float(close),
+        S=float(underlying_close),
+        K=float(strike),
+        T=float(time_to_expiry_years),
+        r=float(risk_free_rate),
+        option_type=option_type,
+        q=q,
+    )
+    if iv is None or not math.isfinite(iv):
+        return None, "solver_error"
+    return float(iv), "ok"
 
 # AGENTS: Mission-critical row worker; computes hypothetical ATM Greeks for one option row.
 def compute_row_atm_greeks_task(task: GreekTask) -> dict:
@@ -767,6 +945,7 @@ def write_output_csv_atomic(df: pd.DataFrame, output_path: Path) -> None:
     temp_output_path = build_temp_path(output_path)
     df.to_csv(temp_output_path, index=False)
     temp_output_path.replace(output_path)
+    write_pricing_stamp(output_path)
 
 # AGENTS: Mission-critical option-file processor; parses, filters, prices, and writes one OPRA day file.
 def process_file(
@@ -796,23 +975,13 @@ def process_file(
 
     print(f"  processing {rel_path}")
 
-    df = pd.read_csv(path, compression="gzip")
+    target_underlyings = resolve_target_underlyings(allowed_underlyings, testing, test_stock)
+    df = read_prefiltered_opra_frame(path, target_underlyings, trade_date)
     if df.empty:
         write_output_csv_atomic(df, output_path)
         return output_path, pd.DataFrame(), close_cache_updates
 
-    parsed = df["ticker"].apply(parse_opra_option_ticker)
-    meta = pd.DataFrame(
-        [
-            item if isinstance(item, dict) else {
-                "underlying": None,
-                "expiration_date": None,
-                "option_type": None,
-                "strike": None,
-            }
-            for item in parsed
-        ]
-    )
+    meta = parse_opra_option_tickers(df["ticker"])
 
     enriched = pd.concat([df, meta], axis=1)
     enriched = enriched[enriched["option_type"].isin(["call", "put"])].copy()
@@ -1034,7 +1203,15 @@ REQUIRED_IV_OUTPUT_COLS = {
 
 # AGENTS: Resume support; used to avoid reprocessing valid per-day IV outputs.
 def existing_iv_output_is_valid(output_path: Path) -> bool:
+    if not pricing_output_matches(output_path):
+        return False
     try:
+        with open(output_path, "r") as f:
+            header = f.readline()
+            second_line = f.readline()
+            if not second_line:
+                print(f"  reprocessing empty IV file (0 rows): {output_path}")
+                return False
         columns = pd.read_csv(output_path, nrows=0).columns
     except Exception:
         return False

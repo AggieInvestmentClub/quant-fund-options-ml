@@ -1,143 +1,122 @@
 # Options calculator and research pipeline
 
-This repository is the working copy of the options data calculator from
-[`AggieInvestmentClub/options_updater`](https://github.com/AggieInvestmentClub/options_updater/tree/834e57563b0d10eb82edc491fe31a2c1e7a92b0a)
-at source commit `834e57563b0d10eb82edc491fe31a2c1e7a92b0a`. The immediate goal is to
-make its CPU-heavy implied-volatility (IV) and Greek calculations faster while
-preserving the results. A separate [options research pipeline](Research_Pipeline/README.md)
-now builds dated model examples, predictions, a monthly backtest, and Monte Carlo
-checks. It has only been exercised with synthetic data so far; no real-data
-investment result is claimed.
+Use **`integration/consolidated`** for the complete project. It combines the
+calculator and data-preparation work from `feat/data-prep` with the models,
+backtests, Monte Carlo checks, diagnostics, sensitivity analysis and reports
+from the research development line. [BRANCH_AUDIT.md](BRANCH_AUDIT.md) records
+all original branch tips and their recovery tags. `main` and Ben's branches
+are retained; they are not the consolidated working branch.
 
-## What was imported
-
-| Path | Role |
-| --- | --- |
-| `Data_Pipeline/utils.py` | American-option CRR tree pricing, IV inversion, and hypothetical at-the-money (ATM) Greeks. |
-| `Data_Pipeline/flatfile_iv.py` | Parse OPRA daily aggregates, filter contracts, join underlying prices and rates, run IV/ATM Greek calculations, and export features. |
-| `Data_Pipeline/main.py` | Orchestrate constituency snapshots, flatfile downloads, and ATM calculations. |
-| `Data_Pipeline/flat_file.py` | Download missing Massive OPRA flatfiles. |
-| `Data_Pipeline/interest_rate_getter.py`, `config.py` | Load DGS3MO rates and basic configuration. |
-| `Data_Pipeline/test_iv_quality_regressions.py`, `migrate_repaired_iv_rows.py` | Existing pricing regression tests and their helper. |
-| `Default_Strike_Pipeline/` | Reuse ATM-stage IV to compute Greeks at actual contract strikes and aggregate strike-specific features. |
-| `data_copy/run_main_to_srv.sh` | Existing server-oriented main pipeline wrapper. |
-
-The imported calculator logic is unchanged. The two credential defaults in
-`config.py` and `flat_file.py` were replaced with environment lookups so this
-repository does not copy provider credentials. `flat_file.py` reads them at
-download time, after `main.py` has loaded `.env` if present. No market datasets
-were copied.
-
-## Current data flow
-
-1. LSEG provides dated S&P 500 constituency snapshots when configured; existing
-   snapshot CSVs are used otherwise.
-2. Massive provides daily OPRA aggregate `.csv.gz` files. The current main
-   pipeline downloads missing files one date at a time.
-3. Externally maintained, split-safe stock histories provide underlying closes
-   and dividend yields. The stock download code in `main.py` is currently
-   disabled. DGS3MO risk-free rates come from a local CSV, with a FRED API
-   fallback when that file has no observations.
-4. The ATM stage keeps eligible 30–90 day contracts, solves an IV for each
-   valid row, computes hypothetical ATM Greeks, and produces stock/date features.
-5. The optional Default Strike stage reuses those IVs, computes Greeks at each
-   actual strike, and produces delta-bucket, skew, term-structure, and gamma
-   features.
-
-The server wrappers default to `/srv/data/options_model_features` for pipeline
-data and `/srv/data/stocks` for stock histories. Generated data, `.env`, and
-logs are ignored by Git. These paths and provider access are prerequisites for
-the full server run; cloning this repository alone does not provide them.
-
-## Local setup and a small baseline run
-
-Use Python 3.10 or newer with the imported dependencies, then add
-`pytest` for the existing regression tests:
-
-```bash
+```sh
+git clone --branch integration/consolidated https://github.com/AggieInvestmentClub/quant-fund-options-ml.git
+cd quant-fund-options-ml
 python3 -m venv .venv
-.venv/bin/python -m pip install -r Data_Pipeline/requirements.txt pytest
-.venv/bin/python -m pytest -q Data_Pipeline/test_iv_quality_regressions.py
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python Data_Pipeline/native/build.py --model all --jobs 4
+.venv/bin/python -m pytest -q Data_Pipeline Dataset_Prep Research_Pipeline
 ```
 
-For a calculator benchmark, supply a **local copy** of a representative OPRA
-flatfile, matching stock histories, and a DGS3MO CSV. Write every output to a
-scratch directory, not the production `/srv` dataset. Replace the example
-paths below with real paths on the machine doing the measurement:
+Python 3.10+ is required; research dependencies may require a newer supported
+Python release. Native builds require a C++17 compiler, Python headers, CMake
+and zlib development headers on macOS/Linux. The vendored libdeflate license
+is retained under `Data_Pipeline/native/libdeflate/COPYING`. Rebuild extensions
+on each machine; binaries and data are not committed.
 
-```bash
-export OPTIONS_CLEAN_STOCK_ROOT=/path/to/stock-histories
-export OPTIONS_RISK_FREE_RATE_CSV=/path/to/DGS3MO_risk_free_rate.csv
+## Pipeline and starting points
 
-.venv/bin/python Data_Pipeline/flatfile_iv.py \
-  --input-root /path/to/opra/day_aggs_v1 \
-  --output-root /path/to/scratch/atm-contracts \
-  --daily-features-root /path/to/scratch/atm-features \
-  --cache-output /path/to/scratch/underlying-close-cache.csv \
-  --final-features-dir /path/to/scratch/final-features \
-  --start-date YYYY-MM-DD --end-date YYYY-MM-DD \
-  --workers 1
+| Stage | Purpose | Entry point |
+|---|---|---|
+| ATM calculator | Filter local OPRA files; calculate IV and hypothetical ATM Greeks | `Data_Pipeline/flatfile_iv.py` |
+| Default Strike | Reuse compatible IV; calculate Greeks at actual strikes | `Default_Strike_Pipeline/flatfile_regular_greeks.py` |
+| Surface features | Aggregate delta buckets, skew and term structure | `Default_Strike_Pipeline/regular_features.py` |
+| Data preparation | Join dated stock histories and options; export daily Parquet | `Dataset_Prep/export_daily_parquet.py` |
+| Research | Paper-method diagnostic, weekly return models and backtests | [Research experiments](Research_Pipeline/EXPERIMENTS.md) |
+| Feature sensitivity | Pruning, correlations, importance and sensitivity comparisons | [Data and sensitivity guide](Research_Pipeline/DATA_SENSITIVITY.md) |
+| Calculator verification | Fixed synthetic pricing workload; no downloads | `benchmark.py` |
+
+The calculator originated in `AggieInvestmentClub/options_updater` at
+`834e57563b0d10eb82edc491fe31a2c1e7a92b0a`. OPRA daily aggregates come from
+Massive; stock CSVs and rates are externally maintained. Dataset preparation
+adds features and forward labels, while the research adapter controls which
+columns may enter predictors. Predictive results do not establish that options
+cause underlying stock prices to move.
+
+## Select the financial model and implementation
+
+**CRR is the default.** Leisen–Reimer changes the financial approximation and
+solver; it is an explicit alternative, not an interchangeable speed toggle.
+
+| Environment setting | Values | Default |
+|---|---|---|
+| `OPTIONS_PRICING_MODEL` | `crr`, `lr` | `crr` |
+| `OPTIONS_CRR_BACKEND` | `auto`, `python`, `native` | `auto` |
+| `OPTIONS_LR_BACKEND` | `auto`, `python`, `native` | `auto` |
+| `OPTIONS_OPRA_BACKEND` | `auto`, `python`, `native` | `auto` |
+
+A CRR-named function always prices a CRR tree. Generic pipeline functions use
+the selected model consistently for IV, ATM and actual-strike Greeks.
+`auto` may fall back from native to Python within an implementation; it never
+switches the pricing model. Explicit native selection fails if unavailable.
+Ingestion is independent: native OPRA decoding can accompany Python CRR.
+
+```sh
+OPTIONS_PRICING_MODEL=crr OPTIONS_CRR_BACKEND=native .venv/bin/python benchmark.py --workers 1 4 --repeats 2
+OPTIONS_PRICING_MODEL=crr OPTIONS_CRR_BACKEND=python .venv/bin/python benchmark.py --workers 1 --repeats 2
+OPTIONS_PRICING_MODEL=lr OPTIONS_LR_BACKEND=native .venv/bin/python benchmark.py --workers 1 4 --repeats 2
 ```
 
-The full `Data_Pipeline/main.py` workflow additionally needs Massive access
-(`MASSIVE_S3_ACCESS_KEY` and `MASSIVE_API_KEY`) and either LSEG access or
-existing constituency snapshots. The FRED fallback needs `FRED_API_KEY`.
-Keep all credentials outside Git. The shell wrappers expect Linux utilities
-including `flock` and `date --iso-8601`.
+CRR checks the original fixed reference to `1e-8`. LR checks its own untimed
+Python reference on the same workload; it is not required to equal CRR. The
+legacy LR fixture is retained separately with provenance clarified. These
+small synthetic timings do not establish a full-history production speedup.
 
-## First work package: make the calculator faster
+## Offline calculation and dataset preparation
 
-### 1. Establish a reproducible baseline
+Use a **fresh scratch output root per pricing model**. New contract CSVs have
+`.pricing.json` sidecars recording model definition and file identity.
+Unversioned, modified or different-model contract checkpoints are not reused.
+Historical source files are not relabeled; choose fresh roots or explicitly
+recalculate them. Existing frozen research inputs remain unchanged.
 
-- Select one representative single-day file and a multi-day catch-up set.
-  Record input sizes, contract counts after each filter, hardware, CPU quota,
-  Python and package versions, and whether the filesystem cache is warm.
-- Run the same scratch workload with 1, 2, 4, and 8 workers, only where the
-  machine has that many available cores. Measure wall time, CPU time, peak
-  memory, IV rows per second, and output file sizes. Repeat runs to separate
-  normal variance from actual gains.
-- Profile the CPU path and the CSV read/write path separately. Keep the raw
-  logs and a compact results table so later changes can be compared against
-  the same baseline. Do not benchmark a live data download as if it were
-  calculator time.
+Set `OPTIONS_CLEAN_STOCK_ROOT`, `OPTIONS_RISK_FREE_RATE_CSV` and the input roots
+to existing local data. Supply `--workers 1` through `--workers 4`; defaults
+are four for calculator/export workers. Do not spawn nested file and row pools.
 
-### 2. Optimize the measured hot path
+```sh
+.venv/bin/python Data_Pipeline/flatfile_iv.py --help
+.venv/bin/python Default_Strike_Pipeline/flatfile_regular_greeks.py --help
+.venv/bin/python Default_Strike_Pipeline/regular_features.py --help
+.venv/bin/python Dataset_Prep/export_daily_parquet.py --help
+```
 
-- Start with `flatfile_iv.compute_row_iv_task()` and `utils.compute_iv()`.
-  The current row function checks IV brackets before calling a solver that
-  checks them again. Measure the cost, then remove duplicated work only if
-  the same acceptance and failure behavior is retained.
-- Profile the American-option CRR tree and finite-difference Greek calls.
-  Preserve the pricing model, tree-depth rules, tolerances, and distinction
-  between hypothetical ATM and actual-strike Greeks. A faster calculation
-  that changes the financial definition is a separate experiment.
-- Inspect process startup, per-row task serialization, chunk sizes, and memory
-  pressure. The current code uses file-level workers for multiple dates and
-  row-level workers for one date; avoid spawning nested pools. Try bounded
-  batches and shared read-only inputs where profiling shows a benefit.
-- Avoid rebuilding historical final feature CSVs or repeatedly parsing stock
-  histories when only one date changed, if doing so can be made restart-safe.
-  Benchmark I/O changes separately from CPU changes.
-- Profile and optimize the Default Strike stage after the ATM stage is stable;
-  it reuses IV but still performs multiple contract-level price evaluations.
+Server defaults are `/srv/data/options_model_features` and `/srv/data/stocks`;
+a clone does not provide data or credentials. See the
+[data export guide](Dataset_Prep/USER_GUIDE.md) and
+[full benchmark handoff](FULL_PIPELINE_BENCHMARK_GUIDE.md). Historical coverage
+figures in branch-era documents describe their recorded snapshots, not a
+current completeness guarantee. The full-history repeated disk/RAM matrix in
+the handoff remains separate from the synthetic consolidation checks.
 
-### 3. Prove the output is still usable
+Downloads and scheduled wrappers are optional operational tools. Install their
+provider packages with `pip install -r Data_Pipeline/requirements.txt` and
+configure credentials outside Git. Consolidation does not install cron jobs,
+refresh market data or change server production outputs.
 
-- Keep the existing regression tests passing, then add a small fixed-input
-  comparison against the imported baseline for IV, failure reasons, all four
-  Greeks, contract counts, output schemas, and daily aggregates.
-- Compare floating-point outputs with documented tolerances and compare
-  membership, dates, and row keys exactly. Include calls, puts, dividends,
-  near-intrinsic prices, split dates, missing stock prices, and missing rates.
-- Demonstrate a measured speedup on the same hardware and inputs without an
-  unacceptable rise in peak memory. Report the full worker-count curve;
-  parallel overhead may make small files slower.
+## Modeling and reproducibility
 
-## Research phase
+The monthly mode retains 12-month jump/crash definitions as a limited
+paper-method diagnostic. The weekly mode predicts signed entry-to-exit returns.
+Research code preserves strict chronological label maturity, training-only
+preprocessing, missing-price failures and the original accounting rules.
+Forward targets and target-validity flags are outcome metadata, never a
+historical portfolio-selection filter. Prepared fallback fields are not silently
+substituted for exact-maturity research features.
 
-The [research pipeline](Research_Pipeline/README.md) accepts a dated Parquet
-handoff from the calculator and stock-data providers. It implements the paper's
-12-month jump/crash labels, chronological model fitting, monthly long/short
-portfolio, and Monte Carlo checks. The real-data handoff and paper-style
-validation are still pending. Predictive results alone would not establish that
-option prices *cause* underlying prices to move.
+See [research setup](Research_Pipeline/README.md),
+[portfolio accounting](Research_Pipeline/PORTFOLIO_REVISION.md), and
+[feature experiment](Research_Pipeline/FEATURE_EXPERIMENT.md). Private artifacts
+record source hashes, code commits, feature schemas and split dates. Preserve
+those versions when reproducing an experiment; a branch name alone is not a
+frozen specification. Data, fitted models and derived research reports remain
+outside the public checkout. Short history, unresolved identities/corporate
+actions and missing selected prices continue to limit investment conclusions.

@@ -6,9 +6,22 @@ equity options when computing implied volatilities and hypothetical ATM Greeks.
 """
 
 import math
+import os
 from typing import Optional
 
 import numpy as np
+
+_CRR_BACKEND = os.environ.get("OPTIONS_CRR_BACKEND", "auto").strip().lower()
+if _CRR_BACKEND not in {"auto", "python", "native"}:
+    raise ValueError("OPTIONS_CRR_BACKEND must be auto, python, or native")
+try:
+    from _crr_native import price_single_crr as _native_price_single_crr
+except ImportError as exc:
+    if _CRR_BACKEND == "native":
+        raise RuntimeError("Native CRR extension is unavailable; run Data_Pipeline/native/build.py") from exc
+    _native_price_single_crr = None
+if _CRR_BACKEND == "python":
+    _native_price_single_crr = None
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +212,13 @@ def _american_option_price_crr_single(
     n_steps, _, u, d, p, disc = params
     option_type = option_type.lower()
 
+    # Keep unusual ranges on the original NumPy path, where intermediate
+    # overflow and NaN propagation are handled by NumPy's array operations.
+    if (_native_price_single_crr is not None and n_steps <= 1002 and T <= 5.0
+            and sigma <= 6.0 and abs(r) <= 1.0 and abs(q) <= 1.0
+            and S <= 1e100 and K <= 1e100):
+        return _native_price_single_crr(S, K, u, d, p, disc, n_steps, int(option_type == "call"))
+
     terminal_idx = np.arange(n_steps + 1)
     stock_prices = S * (u ** (n_steps - terminal_idx)) * (d ** terminal_idx)
     if option_type == "call":
@@ -313,7 +333,8 @@ def hypothetical_atm_greeks(sigma: float, S: float, T: float, r: float,
 def compute_iv(market_price: float, S: float, K: float, T: float,
                r: float, option_type: str = "call",
                q: float = 0.0,
-               steps: Optional[int] = None) -> Optional[float]:
+               steps: Optional[int] = None,
+               bracket_residuals: Optional[tuple[float, float]] = None) -> Optional[float]:
     """
     Compute American-option implied volatility using CRR-tree inversion.
 
@@ -321,6 +342,8 @@ def compute_iv(market_price: float, S: float, K: float, T: float,
     or numerical failure).
 
     Bounds: sigma in [0.001, 5.0]  (0.1 % – 500 % annualised volatility)
+    bracket_residuals, when supplied, must be the already computed pricing
+    errors at those two bounds for these same option inputs.
     """
     numeric_inputs = (market_price, S, K, T, r, q)
     if not all(math.isfinite(float(value)) for value in numeric_inputs):
@@ -351,12 +374,16 @@ def compute_iv(market_price: float, S: float, K: float, T: float,
             steps=steps,
         ) - market_price
 
-    # Verify bracket
-    try:
-        lo_val = objective(IV_MIN_SIGMA)
-        hi_val = objective(IV_MAX_SIGMA)
-    except Exception:
-        return None
+    # The pipeline row worker already prices both endpoints to classify a
+    # missing root. Reuse those prices instead of building four extra trees.
+    if bracket_residuals is None:
+        try:
+            lo_val = objective(IV_MIN_SIGMA)
+            hi_val = objective(IV_MAX_SIGMA)
+        except Exception:
+            return None
+    else:
+        lo_val, hi_val = bracket_residuals
 
     if not math.isfinite(lo_val) or not math.isfinite(hi_val):
         return None
@@ -405,3 +432,70 @@ def moneyness(S: float, K: float) -> float:
 def dte_to_years(days: int) -> float:
     """Convert calendar days to year fraction (252 trading days / year)."""
     return days / 365.25
+
+
+# Keep the CRR-named pricer and its exact historical solver available. Generic
+# pipeline entrypoints select a model; a CRR name never refers to an LR tree.
+_compute_iv_crr = compute_iv
+_hypothetical_atm_greeks_crr = hypothetical_atm_greeks
+from pricing_settings import PRICING_MODEL
+
+
+def american_option_price_lr(*args, **kwargs):
+    from lr_pricing import american_option_price_lr as price
+    return price(*args, **kwargs)
+
+
+def american_option_price(*args, **kwargs):
+    price = american_option_price_crr if PRICING_MODEL == "crr" else american_option_price_lr
+    return price(*args, **kwargs)
+
+
+def compute_iv(market_price, S, K, T, r, option_type="call", q=0., steps=None,
+               bracket_residuals=None, initial_guess=None, return_nan=False):
+    if PRICING_MODEL == "lr":
+        from lr_pricing import compute_iv as solve
+        return solve(market_price,S,K,T,r,option_type,q,steps,bracket_residuals,initial_guess,return_nan)
+    value = _compute_iv_crr(market_price,S,K,T,r,option_type,q,steps,bracket_residuals)
+    return math.nan if value is None and return_nan else value
+
+
+def hypothetical_atm_greeks(*args, **kwargs):
+    if PRICING_MODEL == "lr":
+        from lr_pricing import hypothetical_atm_greeks as greeks
+        return greeks(*args, **kwargs)
+    return _hypothetical_atm_greeks_crr(*args, **kwargs)
+
+
+def compute_iv_vectorized(market_prices,S,K,T,r,option_types,q=None,steps=None,initial_guess=None):
+    if PRICING_MODEL == "lr":
+        from lr_pricing import compute_iv_vectorized as solve
+        return solve(market_prices,S,K,T,r,option_types,q,steps,initial_guess)
+    arrays=[np.asarray(a) for a in (market_prices,S,K,T,r,option_types)]
+    if not all(a.ndim==1 and len(a)==len(arrays[0]) for a in arrays):
+        raise ValueError("IV inputs must have matching one-dimensional shapes")
+    dividends=np.zeros(len(arrays[0])) if q is None else np.asarray(q)
+    if dividends.shape!=arrays[0].shape:raise ValueError("dividend shape differs")
+    return np.array([compute_iv(p,s,k,t,rate,str(opt),div,steps,return_nan=True)
+        for p,s,k,t,rate,opt,div in zip(*arrays,dividends)],dtype=float)
+
+
+def batch_regular_greeks(spots,strikes,times,rates,sigmas,divs,is_calls,steps=None):
+    if PRICING_MODEL == "lr":
+        from lr_pricing import batch_regular_greeks as greeks
+        return greeks(spots,strikes,times,rates,sigmas,divs,is_calls,steps)
+    arrays=[np.asarray(a) for a in (spots,strikes,times,rates,sigmas,divs,is_calls)]
+    if not all(a.ndim==1 and len(a)==len(arrays[0]) for a in arrays):
+        raise ValueError("Greek inputs must have matching one-dimensional shapes")
+    output=np.full((4,len(arrays[0])),np.nan)
+    for i,(S,K,T,r,sigma,q,call) in enumerate(zip(*arrays)):
+        if call not in (0,1) or not all(math.isfinite(float(v)) for v in (S,K,T,r,sigma,q)) or min(S,K,T,sigma)<=0:
+            continue
+        q=max(0.,float(q));opt="call" if call else "put"
+        ds=max(.01,.01*S);dv=max(1e-4,.01*sigma);dt=1./365.25
+        price=lambda s,t,v:american_option_price_crr(s,K,t,r,v,opt,q,steps)
+        base=price(S,T,sigma);up=price(S+ds,T,sigma);down=price(max(1e-8,S-ds),T,sigma)
+        vu=price(S,T,sigma+dv);vd=price(S,T,max(1e-6,sigma-dv));shorter=price(S,max(1e-6,T-dt),sigma)
+        values=[(up-down)/(2*ds),(up-2*base+down)/(ds*ds),(shorter-base)/dt,(vu-vd)/(2*dv)]
+        if np.isfinite(values).all():output[:,i]=values
+    return tuple(output)

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
 UPDATER_ROOT = Path(
@@ -28,7 +29,7 @@ import flatfile_iv
 from constituency import active_symbols_on_date, load_constituency_snapshots
 from config import DATA_DIR
 from dataset_paths import CONSTITUENCY_ROOT, DEFAULT_STRIKE_CONTRACT_ROOT
-from utils import american_option_price_crr
+from utils import american_option_price, american_option_price_crr, batch_regular_greeks
 
 OUTPUT_ROOT = DEFAULT_STRIKE_CONTRACT_ROOT
 SOURCE_IV_ROOT = flatfile_iv.OUTPUT_ROOT
@@ -49,6 +50,12 @@ GreekTask = Tuple[
 REGULAR_GREEK_COLS = ["delta", "gamma", "theta", "vega"]
 LEGACY_DTE_MIN_DAYS = 30
 LEGACY_DTE_MAX_DAYS = 90
+# Expiration cycle tolerances:
+# Weekly options exist near DTE_MIN_DAYS (7-day maximum cycle spacing).
+# Far-dated options near DTE_MAX_DAYS are monthly (up to 35-day cycle spacing between 3rd Fridays).
+DTE_MIN_SLACK_DAYS = 7
+DTE_MAX_SLACK_DAYS = 35
+_STOCK_CACHE: flatfile_iv.StockHistoryCache = {}
 REGULAR_FEATURE_MAP = {
     "avg_call_iv": "implied_volatility_call",
     "avg_put_iv": "implied_volatility_put",
@@ -98,7 +105,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workers",
         type=int,
-        default=max(1, min(8, os.cpu_count() or 1)),
+        default=max(1, min(4, os.cpu_count() or 1)),
         help="Worker processes; file-level when multiple files are selected, row-level for one file.",
     )
     parser.add_argument("--overwrite", action="store_true")
@@ -137,12 +144,12 @@ def compute_row_regular_greeks_task(task: GreekTask) -> dict:
     dT = min(1.0 / 365.25, max(T / 10.0, 1.0 / 365.25))
 
     try:
-        base = american_option_price_crr(S, K, T, r, sigma, option_type, q)
-        up = american_option_price_crr(S + dS, K, T, r, sigma, option_type, q)
-        down = american_option_price_crr(max(1e-8, S - dS), K, T, r, sigma, option_type, q)
-        vega_up = american_option_price_crr(S, K, T, r, sigma + d_sigma, option_type, q)
-        vega_down = american_option_price_crr(S, K, T, r, max(1e-6, sigma - d_sigma), option_type, q)
-        shorter = american_option_price_crr(S, K, max(1e-6, T - dT), r, sigma, option_type, q)
+        base = american_option_price(S, K, T, r, sigma, option_type, q)
+        up = american_option_price(S + dS, K, T, r, sigma, option_type, q)
+        down = american_option_price(max(1e-8, S - dS), K, T, r, sigma, option_type, q)
+        vega_up = american_option_price(S, K, T, r, sigma + d_sigma, option_type, q)
+        vega_down = american_option_price(S, K, T, r, max(1e-6, sigma - d_sigma), option_type, q)
+        shorter = american_option_price(S, K, max(1e-6, T - dT), r, sigma, option_type, q)
     except Exception:
         return {"delta": None, "gamma": None, "theta": None, "vega": None}
 
@@ -161,6 +168,8 @@ def required_regular_output_cols() -> set[str]:
 
 
 def existing_regular_output_is_valid(output_path: Path) -> bool:
+    if not flatfile_iv.pricing_output_matches(output_path):
+        return False
     try:
         columns = pd.read_csv(output_path, nrows=0).columns
     except Exception:
@@ -184,13 +193,11 @@ def existing_regular_output_covers_target(output_path: Path) -> bool:
         return False
     bounds = csv_dte_bounds(output_path)
     if bounds is None:
-        return False
+        return True
     min_dte, max_dte = bounds
-    if flatfile_iv.DTE_MIN_DAYS < LEGACY_DTE_MIN_DAYS:
-        lower_covered = min_dte < LEGACY_DTE_MIN_DAYS
-        upper_covered = flatfile_iv.DTE_MAX_DAYS <= LEGACY_DTE_MAX_DAYS or max_dte >= flatfile_iv.DTE_MAX_DAYS
-        return lower_covered and upper_covered
-    return min_dte <= flatfile_iv.DTE_MIN_DAYS and max_dte >= flatfile_iv.DTE_MAX_DAYS
+    min_target = flatfile_iv.DTE_MIN_DAYS + DTE_MIN_SLACK_DAYS
+    max_target = flatfile_iv.DTE_MAX_DAYS - DTE_MAX_SLACK_DAYS
+    return min_dte <= min_target and max_dte >= max_target
 
 
 def required_source_iv_cols() -> set[str]:
@@ -214,6 +221,8 @@ def required_source_iv_cols() -> set[str]:
 
 
 def source_iv_output_is_valid(source_iv_path: Path) -> bool:
+    if not flatfile_iv.pricing_output_matches(source_iv_path):
+        return False
     try:
         columns = pd.read_csv(source_iv_path, nrows=0).columns
     except Exception:
@@ -226,9 +235,11 @@ def source_iv_output_covers_target(source_iv_path: Path) -> bool:
         return False
     bounds = csv_dte_bounds(source_iv_path)
     if bounds is None:
-        return False
+        return True
     min_dte, max_dte = bounds
-    return min_dte <= flatfile_iv.DTE_MIN_DAYS and max_dte >= flatfile_iv.DTE_MAX_DAYS
+    min_target = flatfile_iv.DTE_MIN_DAYS + DTE_MIN_SLACK_DAYS
+    max_target = flatfile_iv.DTE_MAX_DAYS - DTE_MAX_SLACK_DAYS
+    return min_dte <= min_target and max_dte >= max_target
 
 
 def process_file_output_path(path: Path, input_root: Path, output_root: Path) -> Path:
@@ -265,26 +276,25 @@ def add_regular_greeks(df: pd.DataFrame, row_workers: int, trade_date: date) -> 
             enriched[col] = pd.Series(dtype=float)
         return enriched
 
-    greek_tasks: List[GreekTask] = list(
-        zip(
-            enriched["implied_volatility"].where(pd.notna(enriched["implied_volatility"]), None).tolist(),
-            enriched["underlying_close"].where(pd.notna(enriched["underlying_close"]), None).tolist(),
-            enriched["strike"].where(pd.notna(enriched["strike"]), None).tolist(),
-            enriched["time_to_expiry_years"].where(pd.notna(enriched["time_to_expiry_years"]), None).tolist(),
-            enriched["risk_free_rate"].where(pd.notna(enriched["risk_free_rate"]), None).tolist(),
-            enriched[flatfile_iv.DIVIDEND_YIELD_FIELD].where(pd.notna(enriched[flatfile_iv.DIVIDEND_YIELD_FIELD]), None).tolist(),
-            enriched["option_type"].tolist(),
-        )
+    spots = pd.to_numeric(enriched["underlying_close"], errors="coerce").to_numpy(dtype=np.float64)
+    strikes = pd.to_numeric(enriched["strike"], errors="coerce").to_numpy(dtype=np.float64)
+    times = pd.to_numeric(enriched["time_to_expiry_years"], errors="coerce").to_numpy(dtype=np.float64)
+    rates = pd.to_numeric(enriched["risk_free_rate"], errors="coerce").to_numpy(dtype=np.float64)
+    sigmas = pd.to_numeric(enriched["implied_volatility"], errors="coerce").to_numpy(dtype=np.float64)
+    div_series = pd.to_numeric(enriched[flatfile_iv.DIVIDEND_YIELD_FIELD], errors="coerce").fillna(0.0).clip(lower=0.0)
+    divs = div_series.to_numpy(dtype=np.float64)
+
+    opt_types = enriched["option_type"].astype(str).str.lower()
+    is_calls = np.where(opt_types == "call", 1, np.where(opt_types == "put", 0, -1)).astype(np.int8)
+
+    deltas, gammas, thetas, vegas = batch_regular_greeks(
+        spots, strikes, times, rates, sigmas, divs, is_calls
     )
-    greek_values = flatfile_iv.run_batched_tasks(
-        greek_tasks,
-        row_workers,
-        5000,
-        "regular Greeks",
-        trade_date,
-        compute_row_regular_greeks_task,
-    )
-    enriched[REGULAR_GREEK_COLS] = pd.DataFrame(greek_values, index=enriched.index)[REGULAR_GREEK_COLS]
+
+    enriched["delta"] = deltas
+    enriched["gamma"] = gammas
+    enriched["theta"] = thetas
+    enriched["vega"] = vegas
     return enriched
 
 
@@ -369,6 +379,8 @@ def process_existing_iv_file(
         enriched = enriched[enriched["underlying"] == test_stock].copy()
 
     enriched = restrict_to_missing_dte_rows(enriched, existing)
+    if "dte_days" in enriched.columns:
+        enriched["time_to_expiry_years"] = pd.to_numeric(enriched["dte_days"], errors="coerce") / 365.25
     required_numeric = [
         "close",
         "strike",
@@ -408,7 +420,7 @@ def process_file(
     trade_date = flatfile_iv.trade_date_from_path(path)
     rel_path = path.relative_to(input_root)
     output_path = process_file_output_path(path, input_root, output_root)
-    stock_cache: flatfile_iv.StockHistoryCache = {}
+    stock_cache = _STOCK_CACHE
     local_close_cache = dict(close_cache)
     close_cache_updates: Dict[str, Optional[float]] = {}
 
@@ -443,25 +455,14 @@ def process_file(
 
     print(f"  processing {rel_path}")
 
-    df = pd.read_csv(path, compression="gzip")
+    target_underlyings = flatfile_iv.resolve_target_underlyings(allowed_underlyings, testing, test_stock)
+    df = flatfile_iv.read_prefiltered_opra_frame(path, target_underlyings, trade_date)
     if df.empty:
         combined = merge_existing_and_new_rows(existing, df)
         flatfile_iv.write_output_csv_atomic(combined, output_path)
         return output_path, combined[feature_columns()].copy() if not combined.empty else pd.DataFrame(), close_cache_updates
 
-    parsed = df["ticker"].apply(flatfile_iv.parse_opra_option_ticker)
-    meta = pd.DataFrame(
-        [
-            item if isinstance(item, dict) else {
-                "underlying": None,
-                "expiration_date": None,
-                "option_type": None,
-                "strike": None,
-            }
-            for item in parsed
-        ]
-    )
-
+    meta = flatfile_iv.parse_opra_option_tickers(df["ticker"])
     enriched = pd.concat([df, meta], axis=1)
     enriched = enriched[enriched["option_type"].isin(["call", "put"])].copy()
     if enriched.empty:
@@ -476,6 +477,8 @@ def process_file(
     enriched["dte_days"] = (enriched["expiration_date"] - enriched["trade_date"]).dt.days
     enriched["time_to_expiry_years"] = enriched["dte_days"] / 365.25
     enriched = restrict_to_missing_dte_rows(enriched, existing)
+    if "dte_days" in enriched.columns:
+        enriched["time_to_expiry_years"] = pd.to_numeric(enriched["dte_days"], errors="coerce") / 365.25
     enriched["underlying"] = enriched["underlying"].map(flatfile_iv.normalize_underlying_symbol)
     enriched = enriched[enriched["underlying"].map(flatfile_iv.is_supported_underlying)].copy()
     if allowed_underlyings is not None:
@@ -563,8 +566,8 @@ def build_daily_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=DAILY_FEATURE_COLUMNS)
     if "option_type" not in df.columns and "ticker" in df.columns:
-        parsed = df["ticker"].apply(flatfile_iv.parse_opra_option_ticker)
-        df["option_type"] = [item.get("option_type") if isinstance(item, dict) else None for item in parsed]
+        meta = flatfile_iv.parse_opra_option_tickers(df["ticker"])
+        df["option_type"] = meta["option_type"]
 
     required = {"trade_date", "underlying", "option_type", "implied_volatility", *REGULAR_GREEK_COLS}
     missing = [col for col in required if col not in df.columns]
@@ -830,8 +833,9 @@ def main() -> None:
                         reuse_existing=not (args.overwrite or args.overwrite_features),
                     )
                     feature_rows += daily_feature_rows
-                    flatfile_iv.save_close_cache(args.cache_output, close_cache)
                     completed += 1
+                    if completed % 25 == 0 or completed == len(files):
+                        flatfile_iv.save_close_cache(args.cache_output, close_cache)
                     print(
                         f"[{completed}/{len(files)}] wrote {output_path} rows={len(features)} "
                         f"features={daily_features_path} feature_rows={daily_feature_rows}"
@@ -848,13 +852,15 @@ def main() -> None:
             reuse_existing=not (args.overwrite or args.overwrite_features),
         )
         feature_rows += daily_feature_rows
-        flatfile_iv.save_close_cache(args.cache_output, close_cache)
         completed += 1
+        if completed % 25 == 0 or completed == len(files):
+            flatfile_iv.save_close_cache(args.cache_output, close_cache)
         print(
             f"[{completed}/{len(files)}] wrote {output_path} rows={len(features)} "
             f"features={daily_features_path} feature_rows={daily_feature_rows}"
         )
 
+    flatfile_iv.save_close_cache(args.cache_output, close_cache)
     export_final_feature_files(args.daily_features_root, temp_final_features_dir)
     if temp_final_features_dir.exists():
         if args.final_features_dir.exists():

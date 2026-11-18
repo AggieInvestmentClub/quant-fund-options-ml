@@ -1,8 +1,11 @@
 .env
 *.log
 *.pyc
+*.so
+*.pyd
 __pycache__/
 Data_Pipeline/_crr_native*.so
+.venv
 .venv/
 .venv_root_empty/
 
@@ -26,3 +29,6 @@ logs/
 research_results/
 private_inputs/
 *.joblib
+# Build artifacts
+Data_Pipeline/native/libdeflate/build/
+*.a
