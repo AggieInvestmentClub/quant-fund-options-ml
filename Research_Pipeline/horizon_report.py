@@ -106,3 +106,102 @@ def charts(root,table):
             ax.set_title(c,fontsize=8)
         for ax in list(axes.flat)[len(f):]:ax.set_visible(False)
         fig.tight_layout();fig.savefig(p.parent/'sensitivity.png',dpi=100);plt.close(fig)
+
+
+def export_word(root,base_docx,output):
+    """Append the new experiment to the retained report; use the document runtime."""
+    from docx import Document
+    from docx.shared import Inches,Pt,RGBColor
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    root=Path(root);output=Path(output);output.parent.mkdir(parents=True,exist_ok=True)
+    doc=Document(base_docx);doc.add_page_break()
+    def para(text):
+        p=doc.add_paragraph(text)
+        for run in p.runs:run.font.size=Pt(10);run.font.color.rgb=RGBColor(0,0,0)
+        return p
+    def heading(text,level=2):
+        p=doc.add_heading(text,level)
+        for run in p.runs:run.font.color.rgb=RGBColor(0,0,0)
+    def table(headers,rows):
+        t=doc.add_table(rows=1,cols=len(headers));t.style='Table Grid';t.autofit=True
+        for cell,text in zip(t.rows[0].cells,headers):cell.text=str(text)
+        repeat=OxmlElement('w:tblHeader');t.rows[0]._tr.get_or_add_trPr().append(repeat)
+        for row in rows:
+            for cell,value in zip(t.add_row().cells,row):cell.text=str(value)
+        for ri,row in enumerate(t.rows):
+            for cell in row.cells:
+                tcPr=cell._tc.get_or_add_tcPr()
+                margins=OxmlElement('w:tcMar')
+                for edge in ['top','left','bottom','right']:
+                    node=OxmlElement('w:'+edge);node.set(qn('w:w'),'80');node.set(qn('w:type'),'dxa');margins.append(node)
+                tcPr.append(margins)
+                if ri==0:
+                    shade=OxmlElement('w:shd');shade.set(qn('w:fill'),'DCE6F1');tcPr.append(shade)
+                for p in cell.paragraphs:
+                    p.paragraph_format.space_after=Pt(3)
+                    for r in p.runs:r.font.size=Pt(8);r.font.bold=ri==0;r.font.color.rgb=RGBColor(0,0,0)
+        doc.add_paragraph()
+    heading('Holding periods relative returns and selective trading',1)
+    selection=load(root/'selection.json')
+    para('This experiment uses the same frozen data to test longer holds, a relative-return target and more selective trading. All results are exploratory because the historical period was previously inspected. The earlier paper diagnostic and weekly experiments remain reference results.')
+    para('Development covers June 2 2025 to March 9 2026. Historical comparison covers May 11 to October 26 2026. The common historical window contains 24 one-week holds, 12 two-week holds or six four-week holds. Portfolios rebalance only when a holding period ends; daily prices value positions in between.')
+    heading('Models and targets')
+    para('Ridge learns a weighted sum of features while penalizing unusually large coefficients. LightGBM combines trees that learn thresholds and interactions. Each predicts the percentage return for its own holding horizon. The relative target subtracts the equal-weight return of eligible stocks with known outcomes, so it predicts performance against peers. Neither model predicts weekly jump or crash classes here.')
+    para('All preprocessing is fitted on matured training observations. Weekly training labels may overlap at longer horizons, but actual portfolios do not overlap. A label becomes usable only after its exit close. Stock-only and combined models share the same eligible stocks and calendar.')
+    para('Development selection: '+selection['status']+'. Configuration '+selection['variant']+'. Only development outcomes choose the configuration; historical results cannot replace it.')
+    heading('Horizon experiment results')
+    frame=pd.read_csv(root/'comparison.csv');frame=frame[frame.window.eq('historical')]
+    stats=load(root/'inference/statistics.json')
+    for model in ['ridge','lightgbm']:
+        heading('Ridge results' if model=='ridge' else 'LightGBM results',3)
+        rows=[]
+        for r in frame[frame.model.eq(model)].itertuples():
+            p=stats.get('stage1/'+r.variant,{}).get('net',{}).get('p_adjusted')
+            rows.append([r.horizon[1:],r.target,'Stock' if r.features=='stock_only' else 'Combined',fmt(r.mean_ic),fmt(r.net_return,True),fmt(r.sharpe),fmt(p)])
+        table(['Weeks','Target','Inputs','Rank IC','Net return','Sharpe','Adj p'],rows)
+    para('Unavailable returns indicate a failed portfolio accounting requirement, including missing selected prices. Such stocks are never removed retrospectively to create a complete backtest. Every configuration is retained in the private comparison files.')
+    heading('Momentum confirmations and trading rules')
+    para('Momentum ranks the trailing 63-session return. Longs require positive momentum and shorts negative momentum. The gap confirmation requires above-median call-minus-put IV for longs and below-median values for shorts. Skew adds below-median put skew for longs and above-median skew for shorts. Missing confirmations fail the filter, with unfilled exposure left in cash.')
+    para('Baseline entry and retention use the highest and lowest 5 percent. Stricter entry uses 2.5 percent. The holding buffer retains incumbents within the outer 10 percent, provided all confirmations still pass. These thresholds measure ranks rather than calibrated prediction confidence.')
+    rules=load(root/'historical/rules/metrics.json')
+    for mode,label in [('long_short','Combined long and short'),('long_only','Long only'),('short_only','Short only')]:
+        heading(label,3);rows=[]
+        for key,m in rules.items():
+            if not key.endswith('/'+mode):continue
+            n=m['net'];rows.append([key.rsplit('/',1)[0],fmt(n.get('cumulative_return'),True),fmt(n.get('sharpe')),fmt(n.get('max_drawdown'),True)])
+        table(['Configuration','Net return','Sharpe','Drawdown'],rows)
+    para('All portfolios start with $100,000. Selected positions use equal weights and a 5 percent stock cap. Costs use the frozen IBKR approximation, 1 basis point execution allowance and 3 percent annual short borrow. Cash earns zero interest. Sparse portfolios can have lower gross exposure, so improved returns alone do not prove improved stock selection.')
+    heading('What the measurements tell us')
+    para('Rank IC measures agreement between predicted and realized stock rankings; positive is better. Net return includes the modeled charges. Sharpe compares average weekly return with its variability. Drawdown measures the largest daily peak-to-trough decline. Turnover measures traded dollars relative to equity. Alpha is only an internal-universe regression proxy when benchmark prices are complete, not the reference paper factor alpha.')
+    for name,caption in [('ranking.png','Prediction quality for all horizon configurations'),('equity.png','Selected trading rules and momentum portfolios')]:
+        p=root/'charts'/name
+        if p.exists():doc.add_picture(str(p),width=Inches(6));para(caption)
+    heading('Monte Carlo and bootstrap checks')
+    para('Each declared strategy receives 2,000 market-cap-decile shuffles. Scores and confirmation inputs move together, and positions, retention and costs are rebuilt. Gross and net simulations share the same permutations. The portfolio family contains every declared case; ranking uses a separate 24-model family. Invalid draws remain visible through counts and conservative bounds. Independent period shuffles are not turnover matched.')
+    rows=[]
+    for key,m in stats.items():
+        if not key.startswith('stage2/') or not key.endswith('/long_short'):continue
+        rows.append([key.split('/')[1],fmt(m['net']['p_adjusted']),m['net']['invalid_draws']])
+    table(['Combined strategy','Adjusted p','Invalid draws'],rows)
+    primary=stats['stage2/ml_both/long_short']
+    for label in ['mean_weekly_return','annualized_return','sharpe']:
+        ci=primary.get('net_'+label+'_95pct')
+        para('Primary strategy '+label.replace('_',' ')+' bootstrap 95 percent interval: '+(str(ci) if ci else 'Unavailable')+'.')
+    para('Bootstrap checks use 2,000 shared eight-calendar-week block resamples. Only 24 historical weeks and six four-week holding periods exist, so uncertainty estimates have limited precision. Full random draws, gross results, costs, attribution and all confidence intervals accompany the private artifacts.')
+    heading('Conclusion')
+    text=(root/'REPORT.md').read_text();conclusion=text.split('## Interpretation\n\n',1)[1].split('\n',1)[0]
+    para(conclusion)
+    para('The screen requires positive net return, Sharpe at least one, daily drawdown no worse than minus 20 percent, adjusted randomization p below .05 and a positive lower bootstrap bound for mean return. Options must also improve a matched stock-only strategy before an incremental-value claim is made. This is preliminary research, not paper replication or live-trading validation.')
+    para('Calculation commit '+load(root/'manifest.json')['code_commit']+'. Input hashes, configurations, training cutoffs, models, predictions, ledgers and raw simulations are retained privately. Source data and earlier experiment artifacts were not changed.')
+    doc.save(output)
+
+if __name__=='__main__':
+    import argparse
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--results',required=True)
+    parser.add_argument('--base-docx');parser.add_argument('--output-docx')
+    args=parser.parse_args()
+    if bool(args.base_docx)!=bool(args.output_docx):parser.error('provide both --base-docx and --output-docx')
+    write_report(args.results)
+    if args.base_docx:export_word(args.results,args.base_docx,args.output_docx)

@@ -40,3 +40,14 @@ The private report includes model explanations, all configurations, IC/quintiles
 ```sh
 python -m pytest -q Research_Pipeline
 ```
+
+## Presentation report
+
+Use a Python runtime with the document dependencies to append this experiment to the retained Word report:
+
+```sh
+python -m Research_Pipeline.horizon_report --results /private/horizon-results \
+  --base-docx /private/reference-report.docx --output-docx /private/horizon-report.docx
+```
+
+Render the resulting Word file and export its PDF, inspect the pages, and retain both privately. Existing reports are inputs, not overwritten. The Markdown report and CSVs remain the complete machine-readable comparisons, including unavailable results.
