@@ -144,3 +144,34 @@ def test_synthetic_end_to_end_portfolio_and_statistics(tmp_path):
     broken=prices.copy();broken.loc[broken.security_id.eq(held.security_id)&broken.trade_date.eq(bounds[1]),'adjusted_close']=np.nan
     bad,_,_=portfolio_case(pred,broken,tmp_path/'bad',boundaries=bounds)
     assert bad['net']['status']=='invalid'
+
+
+def test_new_horizon_control_check_rejects_changed_predictions():
+    from .horizon_strategy import verify_horizon_baselines
+    from .test_strategy import fixture as tiny
+    p,_=tiny();p['target']=.01;pred={};old=[]
+    for group in ['stock_only','full']:
+        for model in ['ridge','lightgbm']:
+            f=p.copy();f['target_absolute']=f.target;pred[f'h1/absolute/{group}/{model}']=f
+            f=f.copy();f['variant']=group+'/'+model;old.append(f)
+    reference=pd.concat(old,ignore_index=True)
+    result=verify_horizon_baselines(pred,reference)
+    assert len(result)==4 and all(v['max_absolute_prediction_error']==0 for v in result.values())
+    reference['score']=reference.score.astype(float)
+    reference.loc[0,'score']+=1e-6
+    with pytest.raises(AssertionError,match='predictions changed'):verify_horizon_baselines(pred,reference)
+
+
+@pytest.mark.parametrize('mode',['long_short','long_only','short_only'])
+def test_all_policies_reconcile_with_reversal_and_capture_free_paths(mode):
+    from .test_strategy import fixture as tiny
+    p,prices=tiny();prices['close']=prices.adjusted_close
+    p.loc[p.period.eq('1'),'score']*=-1
+    for policy in POLICIES.values():
+        spec=PortfolioSpec('equal',selection=policy,mode=mode)
+        ps=prepare_replay(p,prices)
+        ordinary=ledger(ps,portfolio=spec,costs=NET,initial_capital=100000.)
+        fast=ledger(ps,portfolio=spec,costs=NET,initial_capital=100000.,capture=False)
+        audit(ordinary)
+        assert ordinary['equity_path']==fast['equity_path']
+        assert ordinary['final_equity']==pytest.approx(fast['final_equity'],abs=1e-8)

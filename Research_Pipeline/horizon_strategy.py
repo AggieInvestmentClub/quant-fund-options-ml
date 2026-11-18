@@ -189,6 +189,23 @@ def control_reproduction(panel,prices,reference,out,hashes):
     return checks
 
 
+def verify_horizon_baselines(predictions,reference):
+    """The new one-week absolute path must also reproduce the saved controls."""
+    checks={}
+    for group in FEATURES:
+        for model in ('ridge','lightgbm'):
+            variant=f'h1/absolute/{group}/{model}';p=predictions[variant]
+            old=reference[reference.variant.eq(group+'/'+model)&reference.period.isin(p.period)]
+            z=p.merge(old[['period','security_id','score','target']],on=['period','security_id'],
+                how='outer',validate='one_to_one',suffixes=('_new','_old'),indicator=True)
+            if not z._merge.eq('both').all():raise AssertionError('horizon baseline keys changed: '+variant)
+            if not np.allclose(z.target_absolute,z.target_old,atol=0,rtol=0,equal_nan=True):raise AssertionError('horizon baseline outcomes changed')
+            error=float(np.abs(z.score_new-z.score_old).max())
+            if error>1e-8:raise AssertionError('horizon baseline predictions changed: '+variant)
+            checks[variant]=dict(rows=len(z),max_absolute_prediction_error=error,tolerance=1e-8)
+    return checks
+
+
 def run(panel_path,price_path,reference,out,cores=4,iterations=2000,stage='all'):
     _limit_cores(cores);out=Path(out);out.mkdir(parents=True,exist_ok=True)
     paths={'panel':Path(panel_path).resolve(),'prices':Path(price_path).resolve(),
@@ -228,6 +245,9 @@ def run(panel_path,price_path,reference,out,cores=4,iterations=2000,stage='all')
             if stage=='horizons':
                 # Stage name stops after BOTH horizon windows below; it never freezes a new selection on historical outcomes.
                 pass
+        else:
+            checks=verify_horizon_baselines(fits,pd.read_parquet(paths['reference_predictions']))
+            dump(out/'horizon_baseline_verification.json',checks)
     if stage=='horizons':return
     cases=rule_cases(selected['variant']);h=int(selected['variant'].split('/')[0][1:])
     # Freeze the complete inference family before any Stage 2 historical replay.

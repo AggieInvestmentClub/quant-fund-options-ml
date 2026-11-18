@@ -52,6 +52,21 @@ def write_report(root):
         rule=load(rulefile)
         for name,m in rule.items():
             n=m['net'];lines.append(f'| {name} | {fmt(n.get("cumulative_return"),True)} | {fmt(n.get("sharpe"))} | {fmt(n.get("max_drawdown"),True)} | {n["status"]} |')
+        attribution=[]
+        for name,m in rule.items():
+            n=m['net']
+            if n['status']!='complete':continue
+            folder=root/'historical/rules'/name.replace('/','_')
+            daily=pd.read_parquet(folder/'net_daily.parquet')
+            trades=pd.read_parquet(folder/'net_trades.parquet')
+            cost=n['cost_components'];nv=n.get('nvda',{})
+            attribution.append(dict(configuration=name,net_return=n['cumulative_return'],
+                long_pnl=n['long_pnl_dollars'],short_pnl=n['short_pnl_dollars'],
+                long_transaction_cost=float(trades.long_transaction_cost.sum()),short_transaction_cost=float(trades.short_transaction_cost.sum()),
+                average_gross_exposure=float(daily.gross_exposure.mean()),average_net_exposure=float(daily.net_exposure.mean()),
+                largest_position=n['largest_daily_position'],nvda_pnl=nv.get('pnl_dollars'),
+                **{k:cost[k] for k in ['commission','regulatory','execution','borrow']}))
+        pd.DataFrame(attribution).to_csv(root/'costs_exposure_attribution.csv',index=False)
     lines+=['','## What the measurements mean','',
       'Rank IC measures whether predicted rankings agree with realized rankings; positive is better. Net return includes commission, regulatory charges, spread/slippage and borrow. Sharpe compares average weekly return with its variability. Drawdown is the worst daily loss from an earlier equity peak. Turnover measures traded dollars relative to portfolio equity.',
       '', 'We use $100,000, equal weights, a 5 percent cap per stock, the previously frozen IBKR commission approximation, 1 basis point execution cost and 3 percent annual short borrow. Positions can drift between scheduled rebalances. Zero cash interest and the prior financing limitations remain. Less exposure or fewer trades can improve losses without improving stock selection, so exposure and costs must be read alongside returns.',
@@ -60,8 +75,8 @@ def write_report(root):
       'Each declared historical strategy receives 2,000 score shuffles within decision period and market-cap decile. Momentum and confirmation inputs move together. Holdings, retention and charges are replayed after each shuffle. Shared permutations pair gross/net and comparable strategies. Independent period shuffles are not turnover matched.',
       '', 'All declared portfolio cases count toward one Bonferroni family; ranking tests form a separate 24-configuration family. Missing-price draws remain invalid and contribute conservative p-value bounds. We never report valid-draw-only p-values.',
       '', 'The same 2,000 eight-calendar-week block resamples are used across strategies. Intervals describe historical uncertainty, with only 24 weeks and six four-week holds. They are not live-trading validation.',
-      '', '| Case | Net adjusted p | Invalid net draws |','|---|---:|---:|']
-    for key,m in stats.items():lines.append(f'| {key} | {fmt(m["net"]["p_adjusted"])} | {m["net"]["invalid_draws"]} |')
+      '', '| Case | Net adjusted p | Raw p bounds | Invalid net draws |','|---|---:|---|---:|']
+    for key,m in stats.items():lines.append(f'| {key} | {fmt(m["net"]["p_adjusted"])} | {m["net"].get("p_bounds")} | {m["net"]["invalid_draws"]} |')
     primary=stats.get('stage2/ml_both/long_short',{})
     rules=load(rulefile) if rulefile.exists() else {}
     net=rules.get('ml_both/long_short',{}).get('net',{})
@@ -94,6 +109,21 @@ def charts(root,table):
             d=pd.read_parquet(p);ax.plot(d.date,d.equity/100000,label=name)
     ax.legend(fontsize=7);ax.set_ylabel('Equity relative to starting capital');fig.tight_layout()
     fig.savefig(out/'equity.png',dpi=130);plt.close(fig)
+    aliases=load(root/'inference/aliases.json') if (root/'inference/aliases.json').exists() else {}
+    fig,axes=plt.subplots(2,2,figsize=(10,7))
+    choices=['stage2/ml_both/long_short','stage2/ml_both/long_only',
+             'stage2/momentum_plain/long_short','stage2/momentum_gap_skew_both/long_short']
+    for ax,key in zip(axes.flat,choices):
+        folder=root/'inference'/aliases.get(key,key).replace('/','_');p=folder/'random_draws.parquet'
+        if p.exists():
+            draws=pd.read_parquet(p);values=draws.net_mean_weekly_return.dropna()*100
+            if len(values):ax.hist(values,bins=30,color='#4779a0',alpha=.8)
+            else:ax.text(.5,.5,'No complete randomized portfolios',ha='center',transform=ax.transAxes,fontsize=8)
+            actual=folder/'net_weekly.parquet'
+            if actual.exists():ax.axvline(pd.read_parquet(actual)['return'].mean()*100,color='darkred',label='Observed');ax.legend(fontsize=7)
+            else:ax.text(.03,.92,'Observed portfolio invalid',transform=ax.transAxes,fontsize=8)
+        ax.set_title(key.removeprefix('stage2/'),fontsize=8);ax.set_xlabel('Mean net weekly return percent',fontsize=8)
+    fig.tight_layout();fig.savefig(out/'monte_carlo.png',dpi=130);plt.close(fig)
     # Reuse existing training-only effect CSVs to keep interpretation consistent.
     for p in root.glob('*/fits/*/effects/importance.csv'):
         f=pd.read_csv(p);f=f[f.kind.eq('individual')].sort_values('mean_ic_decrease').tail(6)
@@ -115,7 +145,18 @@ def export_word(root,base_docx,output):
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
     root=Path(root);output=Path(output);output.parent.mkdir(parents=True,exist_ok=True)
-    doc=Document(base_docx);doc.add_page_break()
+    doc=Document(base_docx)
+    rule_metrics=load(root/'historical/rules/metrics.json')
+    buffer_return=rule_metrics['ml_buffer/long_only']['net'].get('cumulative_return')
+    for p in doc.paragraphs:
+        if p.text.startswith('Updated November 16 2026.'):
+            p.text='Prepared November 18 2026. This report includes the reference paper diagnostic, weekly feature studies, and the holding-period and selective-trading experiment.'
+        elif p.text=='Feature experiments and portfolio comparisons':p.text='Paper methods options signals and trading experiments'
+        elif 'Aggie Investment Club Options ML team | November 16, 2026' in p.text:
+            p.text=p.text.replace('November 16, 2026','November 18, 2026')
+        elif p.text.startswith('The updated-data experiment compares twelve main model'):
+            p.text=('The latest experiment compares one, two and four week holds and absolute versus relative returns. Complete ML long-short portfolios lost money, while others remain invalid because selected prices are missing. A four-week long-only holding-buffer case returned '+fmt(buffer_return,True)+' after modeled costs, but its randomization checks do not establish an edge. Missing prices prevent a validated development selection; the predefined four-week Ridge fallback remains a diagnostic.')
+    doc.add_page_break()
     def para(text):
         p=doc.add_paragraph(text)
         for run in p.runs:run.font.size=Pt(10);run.font.color.rgb=RGBColor(0,0,0)
@@ -124,13 +165,19 @@ def export_word(root,base_docx,output):
         p=doc.add_heading(text,level)
         for run in p.runs:run.font.color.rgb=RGBColor(0,0,0)
     def table(headers,rows):
-        t=doc.add_table(rows=1,cols=len(headers));t.style='Table Grid';t.autofit=True
+        t=doc.add_table(rows=1,cols=len(headers));t.style='Table Grid';t.autofit=False
+        if headers[0]=='Configuration':widths=[2.3]+[(6.2-2.3)/(len(headers)-1)]*(len(headers)-1)
+        elif headers[0]=='Combined strategy':widths=[2.6,1.,1.4,1.2] if len(headers)==4 else [3.6,1.3,1.3]
+        elif len(headers)==7:widths=[.5,.9,1.,.8,1.,.9,1.1]
+        else:widths=[6.2/len(headers)]*len(headers)
+        for column,width in zip(t.columns,widths):column.width=Inches(width)
         for cell,text in zip(t.rows[0].cells,headers):cell.text=str(text)
         repeat=OxmlElement('w:tblHeader');t.rows[0]._tr.get_or_add_trPr().append(repeat)
         for row in rows:
             for cell,value in zip(t.add_row().cells,row):cell.text=str(value)
         for ri,row in enumerate(t.rows):
-            for cell in row.cells:
+            for cell,width in zip(row.cells,widths):
+                cell.width=Inches(width)
                 tcPr=cell._tc.get_or_add_tcPr()
                 margins=OxmlElement('w:tcMar')
                 for edge in ['top','left','bottom','right']:
@@ -161,6 +208,7 @@ def export_word(root,base_docx,output):
             rows.append([r.horizon[1:],r.target,'Stock' if r.features=='stock_only' else 'Combined',fmt(r.mean_ic),fmt(r.net_return,True),fmt(r.sharpe),fmt(p)])
         table(['Weeks','Target','Inputs','Rank IC','Net return','Sharpe','Adj p'],rows)
     para('Unavailable returns indicate a failed portfolio accounting requirement, including missing selected prices. Such stocks are never removed retrospectively to create a complete backtest. Every configuration is retained in the private comparison files.')
+    para('Adjusted p in these tables refers to the portfolio randomization test. Separate adjusted ranking tests and target-specific prediction errors are retained in the artifacts. Quintile outcomes use the fitted target: absolute returns or returns relative to peers; their top-minus-bottom spread compares the same cross section.')
     heading('Momentum confirmations and trading rules')
     para('Momentum ranks the trailing 63-session return. Longs require positive momentum and shorts negative momentum. The gap confirmation requires above-median call-minus-put IV for longs and below-median values for shorts. Skew adds below-median put skew for longs and above-median skew for shorts. Missing confirmations fail the filter, with unfilled exposure left in cash.')
     para('Baseline entry and retention use the highest and lowest 5 percent. Stricter entry uses 2.5 percent. The holding buffer retains incumbents within the outer 10 percent, provided all confirmations still pass. These thresholds measure ranks rather than calibrated prediction confidence.')
@@ -172,18 +220,33 @@ def export_word(root,base_docx,output):
             n=m['net'];rows.append([key.rsplit('/',1)[0],fmt(n.get('cumulative_return'),True),fmt(n.get('sharpe')),fmt(n.get('max_drawdown'),True)])
         table(['Configuration','Net return','Sharpe','Drawdown'],rows)
     para('All portfolios start with $100,000. Selected positions use equal weights and a 5 percent stock cap. Costs use the frozen IBKR approximation, 1 basis point execution allowance and 3 percent annual short borrow. Cash earns zero interest. Sparse portfolios can have lower gross exposure, so improved returns alone do not prove improved stock selection.')
+    attr=pd.read_csv(root/'costs_exposure_attribution.csv')
+    heading('Exposure costs and leg contributions',3)
+    a=attr[attr.configuration.str.endswith('/long_short')]
+    table(['Configuration','Avg gross','Long P and L','Short P and L','Trading fees','Borrow'],
+        [[r.configuration.split('/')[0],fmt(r.average_gross_exposure,True),f'${r.long_pnl:,.0f}',
+          f'${r.short_pnl:,.0f}',f'${r.commission+r.regulatory+r.execution:,.0f}',f'${r.borrow:,.0f}'] for r in a.itertuples()])
+    para('Leg P and L precedes costs; standalone leg returns above include their own costs. Component commission, regulatory, execution and borrow charges, average net exposure, concentration and NVDA attribution are retained in the accompanying cost and exposure CSV.')
     heading('What the measurements tell us')
     para('Rank IC measures agreement between predicted and realized stock rankings; positive is better. Net return includes the modeled charges. Sharpe compares average weekly return with its variability. Drawdown measures the largest daily peak-to-trough decline. Turnover measures traded dollars relative to equity. Alpha is only an internal-universe regression proxy when benchmark prices are complete, not the reference paper factor alpha.')
     for name,caption in [('ranking.png','Prediction quality for all horizon configurations'),('equity.png','Selected trading rules and momentum portfolios')]:
         p=root/'charts'/name
         if p.exists():doc.add_picture(str(p),width=Inches(6));para(caption)
+    chosen=selection['variant'].replace('/','_')
+    for name in ['importance.png','sensitivity.png']:
+        p=root/'historical/fits'/chosen/'effects'/name
+        if p.exists():doc.add_picture(str(p),width=Inches(6))
+    para('Feature importance uses earlier chronological validation, including correlated groups. Local sensitivity curves stay within observed training ranges. They describe model behavior and do not establish causal effects.')
     heading('Monte Carlo and bootstrap checks')
     para('Each declared strategy receives 2,000 market-cap-decile shuffles. Scores and confirmation inputs move together, and positions, retention and costs are rebuilt. Gross and net simulations share the same permutations. The portfolio family contains every declared case; ranking uses a separate 24-model family. Invalid draws remain visible through counts and conservative bounds. Independent period shuffles are not turnover matched.')
+    if (root/'charts/monte_carlo.png').exists():doc.add_picture(str(root/'charts/monte_carlo.png'),width=Inches(6))
     rows=[]
     for key,m in stats.items():
         if not key.startswith('stage2/') or not key.endswith('/long_short'):continue
-        rows.append([key.split('/')[1],fmt(m['net']['p_adjusted']),m['net']['invalid_draws']])
-    table(['Combined strategy','Adjusted p','Invalid draws'],rows)
+        bounds=m['net'].get('p_bounds')
+        rows.append([key.split('/')[1],fmt(m['net']['p_adjusted']),
+                     'Unavailable' if bounds is None else fmt(bounds[0])+' to '+fmt(bounds[1]),m['net']['invalid_draws']])
+    table(['Combined strategy','Adjusted p','Raw p bounds','Invalid draws'],rows)
     primary=stats['stage2/ml_both/long_short']
     for label in ['mean_weekly_return','annualized_return','sharpe']:
         ci=primary.get('net_'+label+'_95pct')
