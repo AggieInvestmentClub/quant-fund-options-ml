@@ -102,7 +102,7 @@ def audit(run):
     assert np.isclose(np.prod(1+run['period_returns']),run['final_equity']/capital,atol=1e-10)
     assert np.isclose(run['long_pnl']+run['short_pnl']-run['total_transaction_cost']-run['total_borrow'],run['final_equity']-capital,atol=tol)
     assert np.isclose(sum(run['stock_pnl'].values()),run['long_pnl']+run['short_pnl'],atol=tol)
-    if run['portfolio']['weighting']=='equal':
+    if run['portfolio']['weighting']=='equal' and not run['holdings'].empty:
         assert run['holdings'].weight.abs().max()<=run['portfolio']['max_position']+1e-10
     return dict(cash_reconciles=True,trades_and_costs_reconcile=True,pnl_reconciles=True,
                 returns_compound=True,target_caps_pass=True)
@@ -110,6 +110,10 @@ def audit(run):
 
 def extra_metrics(run):
     c=run['cost_totals'];h=run['holdings'];d=run['daily'];periods=run['periodic'].period
+    if h.empty:
+        return dict(costs_dollars=c,largest_target_position=0.,largest_daily_position=0.,daily_cap_breach_days=0,
+          minimum_effective_long=0.,minimum_effective_short=0.,long_pnl_dollars=0.,short_pnl_dollars=0.,stock_pnl_dollars={},
+          nvda=dict(periods_held=0,total_periods=len(periods),average_abs_target_weight=0.,maximum_abs_target_weight=0.,maximum_abs_daily_weight=0.,pnl_dollars=0.,pnl_pct_starting_capital=0.))
     nv=h[h.security_id.str.endswith(':NVDA')|h.security_id.eq('NVDA')]
     nw=nv.set_index('period').weight.reindex(periods,fill_value=0).abs()
     out=dict(costs_dollars=c,costs_bps_per_traded_dollar={k:10000*c[k]/c['traded'] if c['traded'] else 0 for k in ['commission','regulatory','execution','flat','borrow']},

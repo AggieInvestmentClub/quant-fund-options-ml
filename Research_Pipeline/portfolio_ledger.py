@@ -6,12 +6,24 @@ from .daily_ledger import InvalidPortfolio, select_weights
 
 
 @dataclass(frozen=True)
+class SelectionPolicy:
+    """Ranks use the complete decision-time universe, before confirmations."""
+    entry_fraction: float = .05
+    retain_fraction: float = .05
+
+    def __post_init__(self):
+        if not 0 < self.entry_fraction <= self.retain_fraction <= .5:
+            raise ValueError('invalid entry/retention fractions')
+
+
+@dataclass(frozen=True)
 class PortfolioSpec:
     weighting: str = 'market_cap'
     max_position: float = .05
     selection_fraction: float = .05
     side_exposure: float = 1.
     mode: str = 'long_short'
+    selection: SelectionPolicy | None = None
 
     def __post_init__(self):
         if self.weighting not in ('market_cap','equal') or not 0 < self.max_position <= 1:
@@ -93,12 +105,17 @@ def prepare_replay(predictions,prices):
             raise ValueError('invalid scores or market caps')
         crash=f.p_crash.to_numpy(float) if 'p_crash'in f else None
         if crash is not None and not np.isfinite(crash).all():raise ValueError('invalid crash probabilities')
+        permissions={}
+        for col in ('allow_long','allow_short'):
+            if col in f:
+                if f[col].isna().any() or not f[col].isin([True,False]).all():raise ValueError('invalid confirmation: '+col)
+                permissions[col]=f[col].to_numpy(bool)
         result.append(dict(period=str(key),ids=f.security_id.to_numpy(str),caps=caps,
             score=scores,crash=crash,global_ids=ids,index=np.searchsorted(ids,f.security_id),
             all_prices=adj.loc[days].to_numpy(float),raw_entry=raw.loc[entry].to_numpy(float),
             raw_exit=raw.loc[exit].to_numpy(float),days=days,
             calendar_days=np.diff(days.to_numpy()).astype('timedelta64[D]').astype(float),
-            bins=np.array_split(np.argsort(caps,kind='stable'),min(10,len(f)))))
+            bins=np.array_split(np.argsort(caps,kind='stable'),min(10,len(f))),**permissions))
     if not result:raise ValueError('no prediction periods')
     for a,b in zip(result,result[1:]):
         if a['days'][-1]!=b['days'][0]:raise ValueError('noncontiguous holding periods')
@@ -110,7 +127,7 @@ def replay_ledger(periods, *, portfolio, costs, initial_capital=100000., rng=Non
     if not periods or 'global_ids' not in periods[0]:
         raise ValueError('configured ledger requires prepare_replay arrays')
     ids=periods[0]['global_ids'];size=len(ids);held=np.zeros(size);cash=float(initial_capital)
-    daily=[];returns=[];holdings=[];trades=[];exposures=[]
+    daily=[];returns=[];holdings=[];trades=[];exposures=[];equity_path=[]
     totals=dict(commission=0.,regulatory=0.,execution=0.,flat=0.,borrow=0.,traded=0.,turnover=0.)
     pnl=np.zeros(size);leg_long=leg_short=0.;period_returns=[]
     tol=max(1e-10,initial_capital*1e-12)
@@ -134,6 +151,7 @@ def replay_ledger(periods, *, portfolio, costs, initial_capital=100000., rng=Non
         return delta,fees
 
     def record(day,values,nav,fees,borrow_fee):
+        equity_path.append((day,float(nav)))
         if not capture:return
         pos=np.flatnonzero(values);weights=values[pos]/nav
         lng=weights[weights>0];sht=-weights[weights<0]
@@ -151,11 +169,19 @@ def replay_ledger(periods, *, portfolio, costs, initial_capital=100000., rng=Non
 
     for pi,p in enumerate(periods):
         scores=p['score'].copy();crash=None if p['crash'] is None else p['crash'].copy()
+        allow_long=p.get('allow_long');allow_short=p.get('allow_short')
         if rng is not None:
             for bucket in p['bins']:
                 donor=rng.permutation(bucket);scores[bucket]=p['score'][donor]
                 if crash is not None:crash[bucket]=p['crash'][donor]
-        local_w=select_weights(scores,p['caps'],p['ids'],crash,portfolio)
+                if allow_long is not None:
+                    if allow_long is p['allow_long']:allow_long=allow_long.copy()
+                    allow_long[bucket]=p['allow_long'][donor]
+                if allow_short is not None:
+                    if allow_short is p['allow_short']:allow_short=allow_short.copy()
+                    allow_short[bucket]=p['allow_short'][donor]
+        local_w=select_weights(scores,p['caps'],p['ids'],crash,portfolio,
+            previous=held[p['index']],allow_long=allow_long,allow_short=allow_short)
         ix=p['index'][local_w!=0];w=local_w[local_w!=0];path=p['all_prices'][:,ix];dates=p['days']
         if not np.isfinite(path).all() or (path<0).any() or (path[0]<=0).any():
             raise InvalidPortfolio('missing/invalid selected daily price in '+p['period'])
@@ -210,9 +236,11 @@ def replay_ledger(periods, *, portfolio, costs, initial_capital=100000., rng=Non
     result=dict(initial_capital=initial_capital,final_equity=float(nav),total_transaction_cost=float(sum(totals[k] for k in ('commission','regulatory','execution','flat'))),
         total_borrow=float(totals['borrow']),total_turnover=float(totals['turnover']),period_returns=np.array(period_returns),
         cost_totals={k:float(v) for k,v in totals.items()},long_pnl=leg_long,short_pnl=leg_short,
-        stock_pnl=dict(zip(ids[pnl!=0],pnl[pnl!=0])),portfolio=asdict(portfolio),costs=asdict(costs))
+        stock_pnl=dict(zip(ids[pnl!=0],pnl[pnl!=0])),portfolio=asdict(portfolio),costs=asdict(costs),equity_path=equity_path)
     if capture:
         df=pd.DataFrame(daily);sum_cols=['transaction_cost','borrow_cost','commission','regulatory','execution','flat_cost']
         df=df.groupby('date',as_index=False).agg({c:'sum' if c in sum_cols else 'last' for c in df.columns if c!='date'})
-        result.update(daily=df,holdings=pd.DataFrame(holdings),trades=pd.DataFrame(trades),periodic=pd.DataFrame(returns))
+        h=pd.DataFrame(holdings) if holdings else pd.DataFrame(columns=['period','security_id','weight','units','entry_date','exit_date','entry_equity','pnl'])
+        t=pd.DataFrame(trades) if trades else pd.DataFrame(columns=['date','period','event','security_id','signed_notional','notional','raw_close','share_equivalent','commission','regulatory','execution','flat_cost','transaction_cost','long_traded_notional','short_traded_notional','long_transaction_cost','short_transaction_cost'])
+        result.update(daily=df,holdings=h,trades=t,periodic=pd.DataFrame(returns))
     return result

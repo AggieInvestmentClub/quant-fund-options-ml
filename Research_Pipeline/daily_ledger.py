@@ -7,7 +7,10 @@ import pandas as pd
 class InvalidPortfolio(ValueError):
     pass
 
-def select_weights(scores, caps, ids, crash=None, portfolio=None):
+def select_weights(scores, caps, ids, crash=None, portfolio=None, *, previous=None,
+                   allow_long=None,allow_short=None):
+    if portfolio is not None and (portfolio.selection is not None or allow_long is not None or allow_short is not None):
+        return select_policy_weights(scores,caps,ids,portfolio,previous,allow_long,allow_short)
     n=max(1,math.ceil(len(ids)*(.05 if portfolio is None else portfolio.selection_fraction)))
     if len(ids)<2*n:
         raise InvalidPortfolio('universe too small for two disjoint sides')
@@ -31,6 +34,31 @@ def select_weights(scores, caps, ids, crash=None, portfolio=None):
         else:
             exposure=1. if portfolio is None else portfolio.side_exposure
             w[ix]=sign*exposure*caps[ix]/caps[ix].sum()
+    return w
+
+
+def select_policy_weights(scores,caps,ids,portfolio,previous,allow_long,allow_short):
+    from .portfolio_ledger import SelectionPolicy
+    policy=portfolio.selection or SelectionPolicy()
+    size=len(ids);n=max(1,math.ceil(size*portfolio.selection_fraction))
+    if size<2*n:raise InvalidPortfolio('universe too small for two disjoint sides')
+    previous=np.zeros(size) if previous is None else np.asarray(previous)
+    permissions=[np.ones(size,dtype=bool) if x is None else np.asarray(x,dtype=bool) for x in (allow_long,allow_short)]
+    if previous.shape!=(size,) or any(x.shape!=(size,) for x in permissions):raise ValueError('selection array shape differs')
+    w=np.zeros(size);occupied=set()
+    for sign,order,allowed in [(1,np.lexsort((ids,-scores)),permissions[0]),(-1,np.lexsort((ids,scores)),permissions[1])]:
+        if (portfolio.mode=='long_only' and sign<0) or (portfolio.mode=='short_only' and sign>0):continue
+        keep=set(order[:math.ceil(size*policy.retain_fraction)])
+        # Stable rank priority applies if a changed universe leaves too many incumbents.
+        selected=[i for i in order if previous[i]*sign>0 and i in keep and allowed[i] and i not in occupied][:n]
+        for i in order[:math.ceil(size*policy.entry_fraction)]:
+            if len(selected)>=n:break
+            if allowed[i] and i not in occupied and i not in selected:selected.append(i)
+        occupied.update(selected)
+        if selected:
+            ix=np.array(selected)
+            if portfolio.weighting=='equal':w[ix]=sign*min(portfolio.side_exposure/len(ix),portfolio.max_position)
+            else:w[ix]=sign*portfolio.side_exposure*caps[ix]/caps[ix].sum()
     return w
 
 def prepare(predictions, prices):
