@@ -7,24 +7,24 @@ Audited November 17, 2026. The single working branch is `integration/consolidate
 | Original branch | Pinned commit | Tip author | Retained through | Disposition |
 |---|---|---|---|---|
 | `feat/data-prep` | `3f4d0366de5c027b1c3b728828ec9428eda49671` | Ben Hoang | feat/data-prep development line | leave branch unchanged |
-| `feat/options-ml-pipeline` | `be823350a3c9fcd1b9a0051c273a36b6714f2c5e` | Aarya Bookseller | research development line | archive tag then delete superseded branch |
+| `feat/options-ml-pipeline` | `be823350a3c9fcd1b9a0051c273a36b6714f2c5e` | Aarya Bookseller | research development line | archived; superseded branch removed |
 | `main` | `4ceae00a3661d6447f4340eda989f1cb5e5e0b78` | Ben Hoang | research development line | leave branch unchanged |
 | `perf/fast-gzip` | `e6937ec44c512ad29754354cb07eecaf95c81b09` | Ben Hoang | feat/data-prep development line | leave branch unchanged |
 | `perf/iv-compute-refactor` | `0928f6505c2fd7fa7e7b9bdb02f79b9c3ddaf1d1` | Ben Hoang | feat/data-prep development line | leave branch unchanged |
 | `perf/leisen-reimer-pricing` | `eab440adab74cd5882aa6fa95667607dd0c693c2` | Ben Hoang | feat/data-prep development line | leave branch unchanged |
-| `perf/native-crr-pricing` | `5f56883fb44f10a5099a8d43a0e4c16c95d35b18` | Aarya Bookseller | feat/data-prep development line | archive tag then delete superseded branch |
+| `perf/native-crr-pricing` | `5f56883fb44f10a5099a8d43a0e4c16c95d35b18` | Aarya Bookseller | feat/data-prep development line | archived; superseded branch removed |
 | `perf/native-greeks` | `9e6738dc701a3c5c51edfa0d547cbdda29843a57` | Ben Hoang | feat/data-prep development line | leave branch unchanged |
 | `perf/opra-ingestion` | `c82c4dd311ac7e11347d1dbaf848edd7dbb4fa79` | Ben Hoang | feat/data-prep development line | leave branch unchanged |
-| `perf/reduce-options-cpu-cost` | `a9c6de9e3e8d74662f466ae9a2fc785e45c66575` | Aarya Bookseller | feat/data-prep development line | archive tag then delete superseded branch |
+| `perf/reduce-options-cpu-cost` | `a9c6de9e3e8d74662f466ae9a2fc785e45c66575` | Aarya Bookseller | feat/data-prep development line | archived; superseded branch removed |
 | `perf/stage-2-optimizations` | `1cea3e0718abf1e54dc9577be45d916603f151df` | Ben Hoang | feat/data-prep development line | leave branch unchanged |
 | `perf/stage-2-optimizations2` | `0bf45c38a0d72f2b7848ea78af97f6add9cd7f06` | Ben Hoang | feat/data-prep development line | leave branch unchanged |
 | `perf/stream-ingestion` | `19334626c884837ef00073a8284c13ccfd621c99` | Ben Hoang | feat/data-prep development line | leave branch unchanged |
-| `perf/vectorized-opra-parsing` | `fa7a007426e79728158a139d8c9b7088220c1fca` | Aarya Bookseller | feat/data-prep development line | archive tag then delete superseded branch |
-| `research/data-feature-sensitivity` | `4ce68091a5d43abd042ca24c3b9069b7e716b907` | Aarya Bookseller | research development line | archive tag then delete superseded branch |
-| `research/feature-ablation` | `a9eb39c849ac5d7610f96ddfaef7dc89a1a68233` | Aarya Bookseller | research development line | archive tag then delete superseded branch |
-| `research/paper-replication` | `29353af6c4a3a3aa74115dd36b304ec63390f04a` | Aarya Bookseller | research development line | archive tag then delete superseded branch |
-| `research/portfolio-cost-revision` | `cd1c806cdc9d4c096aedccd0a7bb647d457465c1` | Aarya Bookseller | research development line | archive tag then delete superseded branch |
-| `research/weekly-options-strategy` | `caf2d851512cd71a16be8f0911071b82e8cf64ed` | Aarya Bookseller | research development line | archive tag then delete superseded branch |
+| `perf/vectorized-opra-parsing` | `fa7a007426e79728158a139d8c9b7088220c1fca` | Aarya Bookseller | feat/data-prep development line | archived; superseded branch removed |
+| `research/data-feature-sensitivity` | `4ce68091a5d43abd042ca24c3b9069b7e716b907` | Aarya Bookseller | research development line | archived; superseded branch removed |
+| `research/feature-ablation` | `a9eb39c849ac5d7610f96ddfaef7dc89a1a68233` | Aarya Bookseller | research development line | archived; superseded branch removed |
+| `research/paper-replication` | `29353af6c4a3a3aa74115dd36b304ec63390f04a` | Aarya Bookseller | research development line | archived; superseded branch removed |
+| `research/portfolio-cost-revision` | `cd1c806cdc9d4c096aedccd0a7bb647d457465c1` | Aarya Bookseller | research development line | archived; superseded branch removed |
+| `research/weekly-options-strategy` | `caf2d851512cd71a16be8f0911071b82e8cf64ed` | Aarya Bookseller | research development line | archived; superseded branch removed |
 
 ## Retained functionality and resolutions
 
@@ -62,4 +62,12 @@ git fetch origin --tags
 git switch -c recovered-branch archive/2026-11-17/research/data-feature-sensitivity
 ```
 
-Cleanup completion is recorded in the final audit commit after remote tags, surviving branches and the consolidated commit have been verified.
+## Completed cleanup
+
+- Published the integration merge `98cd53efbd9cbd49b13d40f961f08b4ae5f7b244` to `integration/consolidated`; verified its remote SHA. Every one of the 19 original tips is an ancestor of that merge.
+- Created and pushed all nine annotated recovery tags, then verified their dereferenced remote SHAs against this inventory **before** deleting any branch.
+- Removed the nine approved superseded branches locally and remotely. The remote deletion was atomic and guarded against changed branch tips.
+- Verified that remote `main` and all nine Ben branches retain their exact original SHAs. The remaining 11 remote branches are those ten protected branches plus `integration/consolidated`.
+- Left the GitHub default branch and server jobs unchanged. Data, fitted models, private results and validation logs were not pushed.
+
+Use `integration/consolidated` for subsequent development. Old branch-era instructions should be interpreted through this audit and the root README.
