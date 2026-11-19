@@ -151,3 +151,7 @@ def test_complete_synthetic_command_keeps_source_hashes_and_missing_spy(tmp_path
     comparison=json.loads((out/'historical/paired_comparisons.json').read_text())
     assert comparison['primary_ml25']['status']=='complete'
     assert comparison['ml25_vs_spy']['status'].startswith('unavailable')
+    idx=np.load(out/'historical/paired_block_indices.npy')
+    r=pd.read_parquet(out/'historical/ml25/net_weekly.parquet')['return'].to_numpy()
+    saved=pd.read_parquet(out/'historical/ml25/bootstrap.parquet')
+    np.testing.assert_allclose(saved.net_annualized_return,np.prod(1+r[idx],axis=1)**(365/84)-1)

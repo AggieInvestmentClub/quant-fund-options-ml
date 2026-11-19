@@ -211,7 +211,8 @@ def model_inference(name,pred,prices,out,bounds,observed,indices,iterations):
     draws=pd.DataFrame(records);draws.to_parquet(out/'random_draws.parquet',index=False)
     stats=dict(iterations=iterations,portfolio_family=PORTFOLIO_FAMILY,ranking_family=RANKING_FAMILY,
                mean_rank_ic=float(observed_ic.mean()),ranking=bounded_p(draws.mean_rank_ic,float(observed_ic.mean()),iterations,RANKING_FAMILY),
-               limitation='exploratory; period shuffling changes persistence and turnover; 25-stock size deciles contain only 2-3 names')
+               limitation='exploratory; period shuffling changes persistence and turnover'+
+                   ('; 25-stock size deciles contain only 2-3 names' if name=='ml25' else ''))
     for label in ('net','gross'):
         mean=observed[label].get('mean_weekly_return')
         stats[label]=bounded_p(draws[label+'_mean_weekly_return'],mean,iterations,PORTFOLIO_FAMILY)
@@ -330,7 +331,7 @@ def run(panel_path,price_path,reference,out,spy_path=None,spy_metadata=None,core
         for cost in ('net','gross'):
             r=pd.read_parquet(folder/name/(cost+'_weekly.parquet'))['return'].to_numpy();sample=r[indices]
             means=sample.mean(axis=1);sd=sample.std(axis=1,ddof=1)
-            values=dict(mean_weekly_return=means,annualized_return=np.prod(1+sample,axis=1)**(52/len(r))-1,
+            values=dict(mean_weekly_return=means,annualized_return=np.prod(1+sample,axis=1)**(365/(bounds[-1]-bounds[0]).days)-1,
                         sharpe=np.divide(means*np.sqrt(52),sd,out=np.full(iterations,np.nan),where=sd>0))
             for metric,a in values.items():
                 boot[cost+'_'+metric]=a;intervals[cost+'_'+metric+'_95pct']=np.nanquantile(a,[.025,.975]).tolist()
