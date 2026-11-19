@@ -132,6 +132,8 @@ def test_small_synthetic_complete_command_and_latest_scoring(tmp_path,monkeypatc
     windows={'development':('2025-02-03','2025-03-31'),'historical':('2025-03-31','2025-05-27')}
     monkeypatch.setattr(module,'WINDOWS',windows)
     p.to_parquet(tmp_path/'panel.parquet',index=False);prices.to_parquet(tmp_path/'prices.parquet',index=False)
+    spy=prices[prices.security_id.eq(ids[0])].copy();spy['security_id']='benchmark:SPY';spy['ticker']='SPY'
+    spy.to_parquet(tmp_path/'spy.parquet',index=False)
     config=tmp_path/'config.py';config.write_text('STOCK_UNIVERSE = '+repr([s.split(':')[1] for s in ids]))
     h,master=horizon_panel(p,prices,4);reference=tmp_path/'reference';reference.mkdir()
     for w,dates in windows.items():
@@ -141,12 +143,18 @@ def test_small_synthetic_complete_command_and_latest_scoring(tmp_path,monkeypatc
                 module.fit_variant(h,sched,ids,g+'/'+m,{},reference/w/'fits'/f'h4_absolute_{g}_{m}',{'synthetic':'reference'})
     dump(reference/'manifest.json',dict(sources=dict(panel=sha(tmp_path/'panel.parquet'),prices=sha(tmp_path/'prices.parquet'))))
     out=tmp_path/'results'
-    module.run(tmp_path/'panel.parquet',tmp_path/'prices.parquet',reference,config,out,cores=1,iterations=2)
+    module.run(tmp_path/'panel.parquet',tmp_path/'prices.parquet',reference,config,out,
+               spy=tmp_path/'spy.parquet',cores=1,iterations=2)
     assert json.loads((out/'complete.json').read_text())['status']=='complete'
     assert all(json.loads((out/'source_verification.json').read_text()).values())
     assert len(pd.read_parquet(out/'historical/predictions.parquet'))==6*25*2
     assert len(pd.read_csv(out/'latest/forecasts.csv'))==25
+    spy_metrics=json.loads((out/'historical/portfolios/spy/metrics.json').read_text())
+    assert spy_metrics['net']['status']=='complete'
+    assert spy_metrics['net']['transaction_cost']>0
+    assert spy_metrics['gross']['transaction_cost']==0
     manifest=json.loads((out/'manifest.json').read_text());assert manifest['engineering_pilot']
     # Resume guards cannot silently run different capital/data configurations.
     with pytest.raises(ValueError,match='incompatible experiment resume'):
-        module.run(tmp_path/'panel.parquet',tmp_path/'prices.parquet',reference,config,out,cores=1,iterations=3,stage='audit')
+        module.run(tmp_path/'panel.parquet',tmp_path/'prices.parquet',reference,config,out,
+                   spy=tmp_path/'spy.parquet',cores=1,iterations=3,stage='audit')

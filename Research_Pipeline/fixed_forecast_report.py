@@ -21,6 +21,23 @@ def build_report(root):
     def save(name):
         plt.tight_layout();plt.savefig(fig/(name+'.png'),dpi=200,bbox_inches='tight',facecolor='white');plt.close()
     manifest=load(root/'manifest.json');inference=load(root/'historical/inference/statistics.json')
+    # A separate one-instrument ledger includes SPY entry/exit commissions and execution.
+    # This benchmark never enters training or the 25-stock allocation policy.
+    if 'spy' in manifest['paths']:
+        from .fixed_universe_forecast import evaluate, _spy_returns
+        from .horizon_strategy import weekly_boundaries
+        from .portfolio_ledger import PortfolioSpec
+        spy_path=Path(manifest['paths']['spy']);spy=pd.read_parquet(spy_path)
+        for window,dates in manifest['windows'].items():
+            bounds=weekly_boundaries(*dates)
+            candidate=pd.DataFrame([dict(period='spy_hold',security_id='benchmark:SPY',market_cap=1.,
+                 score=1.,entry_date=bounds[0],exit_date=bounds[-1])])
+            result,_=evaluate(candidate,spy,root/window/'portfolios/spy',bounds,
+                 spec=PortfolioSpec(weighting='equal',mode='long_only',max_position=1.,selection_mode='all'),
+                 spy_returns=_spy_returns(spy_path,bounds))
+            reports=load(root/window/'portfolios/metrics.json');reports['spy']=result
+            from .reevaluate import dump
+            dump(root/window/'portfolios/metrics.json',reports)
     rows=[]
     for window in ('development','historical'):
         accuracy=load(root/window/'accuracy.json');portfolios=load(root/window/'portfolios/metrics.json')
@@ -100,7 +117,7 @@ def build_report(root):
     lines+=['',f"Passive 25-stock four-week control: {pct(passive.get('cumulative_return'))} net. SPY is a separate frozen market benchmark. Profits from passive holdings are not ML profits.",
       '', '## What the measurements mean',
       'RMSE/MAE measure percentage-return forecast errors in decimal-return units. Direction accuracy measures correct positive/nonpositive calls; balanced accuracy weights both realized directions equally. MSE skill = 1 − model MSE / historical-mean MSE; negative means worse than the simple forecast. Date means have equal weight.',
-      'Portfolio net return includes modeled commissions, regulatory fees, 1 bp execution and final liquidation. Cash earns zero; no shorts or borrow. Sharpe uses weekly returns and √52. Drawdown uses daily equity. Alpha uses SPY weekly returns and four-lag Newey–West uncertainty, not the paper factor alpha.',
+      'Portfolio net return includes modeled commissions, regulatory fees, 1 bp execution and final liquidation. Cash earns zero; no shorts or borrow. Sharpe uses weekly returns and √52. Drawdown uses daily equity. Alpha uses SPY weekly returns and four-lag Newey–West uncertainty, not the paper factor alpha. SPY buy-and-hold has a separately costed ledger, using the single-ETF exception to stock slot limits.',
       '', '## Pearson pruning and sensitivity',
       'Each fit removes >50% missing/constant inputs, then prunes |Pearson| ≥ .90 with at least 200 paired training observations. Coverage/name ordering is deterministic. Before/after Pearson/Spearman matrices and removal reasons are saved. Full-feature controls remain. Correlation alone is not proof that a variable lacks value.',
       'Sensitivities vary Ridge alpha, LightGBM leaves/trees, Pearson thresholds .80/.90/.95, entry cutoffs 0/.5/1%, execution 0/1/5 bp and capital $10k/$100k/$1m. They are descriptive; the primary model is not replaced.',
