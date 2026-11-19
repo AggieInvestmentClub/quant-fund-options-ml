@@ -34,6 +34,7 @@ on each machine; binaries and data are not committed.
 | Feature sensitivity | Pruning, correlations, importance and sensitivity comparisons | [Data and sensitivity guide](Research_Pipeline/DATA_SENSITIVITY.md) |
 | Holding periods and trading rules | 1/2/4-week absolute/relative targets, momentum confirmations and retention buffers | [Horizon strategy guide](Research_Pipeline/HORIZON_STRATEGY.md) |
 | Four-week feature pruning | Matched full/pruned Ridge long-only buffer strategy and paired simulations | [Horizon pruning guide](Research_Pipeline/HORIZON_PRUNING.md) |
+| Passive benchmarks | Fixed 25 equal weights, top-20 Ridge, broader passive portfolios and SPY | [Passive benchmark guide](Research_Pipeline/PASSIVE_BENCHMARKS.md) |
 | Calculator verification | Fixed synthetic pricing workload; no downloads | `benchmark.py` |
 
 The calculator originated in `AggieInvestmentClub/options_updater` at

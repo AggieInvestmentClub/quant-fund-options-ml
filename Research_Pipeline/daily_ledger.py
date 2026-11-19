@@ -9,6 +9,16 @@ class InvalidPortfolio(ValueError):
 
 def select_weights(scores, caps, ids, crash=None, portfolio=None, *, previous=None,
                    allow_long=None,allow_short=None):
+    if portfolio is not None and portfolio.selection_mode != 'ranked':
+        if crash is not None or allow_long is not None or allow_short is not None:
+            raise ValueError('passive/count selection does not accept crash scores or confirmations')
+        size=len(ids)
+        if not size:raise InvalidPortfolio('empty explicit-selection universe')
+        count=size if portfolio.selection_mode=='all' else portfolio.selection_count
+        if size<count:raise InvalidPortfolio('fewer candidates than fixed selection count')
+        chosen=np.arange(size) if portfolio.selection_mode=='all' else np.lexsort((ids,-scores))[:count]
+        w=np.zeros(size);w[chosen]=min(portfolio.side_exposure/count,portfolio.max_position)
+        return w
     if portfolio is not None and (portfolio.selection is not None or allow_long is not None or allow_short is not None):
         return select_policy_weights(scores,caps,ids,portfolio,previous,allow_long,allow_short)
     n=max(1,math.ceil(len(ids)*(.05 if portfolio is None else portfolio.selection_fraction)))

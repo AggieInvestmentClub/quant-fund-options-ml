@@ -24,6 +24,8 @@ class PortfolioSpec:
     side_exposure: float = 1.
     mode: str = 'long_short'
     selection: SelectionPolicy | None = None
+    selection_mode: str = 'ranked'
+    selection_count: int | None = None
 
     def __post_init__(self):
         if self.weighting not in ('market_cap','equal') or not 0 < self.max_position <= 1:
@@ -32,6 +34,16 @@ class PortfolioSpec:
             raise ValueError('invalid selection fraction or exposure')
         if self.mode not in ('long_short','long_only','short_only'):
             raise ValueError('invalid portfolio mode')
+        if self.selection_mode not in ('ranked','all','fixed_count'):
+            raise ValueError('invalid selection mode')
+        if self.selection_mode != 'ranked':
+            if self.mode != 'long_only' or self.weighting != 'equal' or self.selection is not None:
+                raise ValueError('explicit passive/count selection requires equal long-only without retention')
+        if self.selection_mode == 'fixed_count':
+            if isinstance(self.selection_count,bool) or not isinstance(self.selection_count,int) or self.selection_count < 1:
+                raise ValueError('fixed count must be a positive integer')
+        elif self.selection_count is not None:
+            raise ValueError('selection count requires fixed_count mode')
 
 
 @dataclass(frozen=True)
