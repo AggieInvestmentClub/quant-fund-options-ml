@@ -117,6 +117,18 @@ def test_all_missing_features_keep_schema_and_deterministic_fit():
     assert a.feature_names_in_.tolist()==['x','missing']
 
 
+def test_report_rejects_changed_frozen_source_before_replaying_benchmark(tmp_path):
+    from .fixed_forecast_report import build_report
+    from .reevaluate import dump,sha
+    source=tmp_path/'source';source.write_text('frozen')
+    dump(tmp_path/'manifest.json',dict(paths={'spy':str(source)},sources={'spy':sha(source)}))
+    folder=tmp_path/'historical/inference';folder.mkdir(parents=True)
+    dump(folder/'statistics.json',{})
+    source.write_text('changed')
+    with pytest.raises(ValueError,match='report source hash changed'):
+        build_report(tmp_path)
+
+
 def test_small_synthetic_complete_command_and_latest_scoring(tmp_path,monkeypatch):
     from . import fixed_universe_forecast as module
     from .test_feature_experiments import panel_fixture

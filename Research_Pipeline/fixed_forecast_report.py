@@ -21,6 +21,10 @@ def build_report(root):
     def save(name):
         plt.tight_layout();plt.savefig(fig/(name+'.png'),dpi=200,bbox_inches='tight',facecolor='white');plt.close()
     manifest=load(root/'manifest.json');inference=load(root/'historical/inference/statistics.json')
+    from .reevaluate import sha
+    for name,path in manifest['paths'].items():
+        if sha(path)!=manifest['sources'][name]:
+            raise ValueError('report source hash changed: '+name)
     # A separate one-instrument ledger includes SPY entry/exit commissions and execution.
     # This benchmark never enters training or the 25-stock allocation policy.
     if 'spy' in manifest['paths']:
