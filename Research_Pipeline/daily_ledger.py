@@ -14,6 +14,15 @@ def select_weights(scores, caps, ids, crash=None, portfolio=None, *, previous=No
             raise ValueError('passive/count selection does not accept crash scores or confirmations')
         size=len(ids)
         if not size:raise InvalidPortfolio('empty explicit-selection universe')
+        if portfolio.selection_mode in ('fixed_slots','exposure_matched'):
+            if size*portfolio.max_position>portfolio.side_exposure+1e-12:
+                raise ValueError('fixed slots exceed permitted exposure')
+            if not np.isfinite(scores).all():raise ValueError('nonfinite fixed-slot forecast')
+            active=np.asarray(scores)>portfolio.entry_threshold
+            if portfolio.selection_mode=='fixed_slots':
+                return active.astype(float)*portfolio.max_position
+            # Comparator holds every stock at the strategy's total target exposure.
+            return np.full(size,active.sum()*portfolio.max_position/size)
         count=size if portfolio.selection_mode=='all' else portfolio.selection_count
         if size<count:raise InvalidPortfolio('fewer candidates than fixed selection count')
         chosen=np.arange(size) if portfolio.selection_mode=='all' else np.lexsort((ids,-scores))[:count]

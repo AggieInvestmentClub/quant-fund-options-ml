@@ -26,6 +26,7 @@ class PortfolioSpec:
     selection: SelectionPolicy | None = None
     selection_mode: str = 'ranked'
     selection_count: int | None = None
+    entry_threshold: float = 0.
 
     def __post_init__(self):
         if self.weighting not in ('market_cap','equal') or not 0 < self.max_position <= 1:
@@ -34,8 +35,12 @@ class PortfolioSpec:
             raise ValueError('invalid selection fraction or exposure')
         if self.mode not in ('long_short','long_only','short_only'):
             raise ValueError('invalid portfolio mode')
-        if self.selection_mode not in ('ranked','all','fixed_count'):
+        if self.selection_mode not in ('ranked','all','fixed_count','fixed_slots','exposure_matched'):
             raise ValueError('invalid selection mode')
+        if not np.isfinite(self.entry_threshold):
+            raise ValueError('invalid entry threshold')
+        if self.selection_mode not in ('fixed_slots','exposure_matched') and self.entry_threshold != 0:
+            raise ValueError('entry threshold requires fixed-slot selection')
         if self.selection_mode != 'ranked':
             if self.mode != 'long_only' or self.weighting != 'equal' or self.selection is not None:
                 raise ValueError('explicit passive/count selection requires equal long-only without retention')

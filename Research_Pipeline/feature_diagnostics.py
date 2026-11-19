@@ -17,7 +17,7 @@ def prune(frame, columns, missing_threshold=.5, correlation_threshold=.90, min_p
             removed[c] = 'constant or all missing in training'; continue
         match = next((k for k in retained if pd.notna(corr.loc[c,k]) and abs(corr.loc[c,k]) >= correlation_threshold), None)
         if match is None: retained.append(c)
-        else: removed[c] = 'absolute Pearson >= 0.90 with '+match
+        else: removed[c] = f'absolute Pearson >= {correlation_threshold:.2f} with '+match
     if not retained: raise ValueError('no usable features after training-only pruning')
     return retained, removed
 
